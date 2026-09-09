@@ -34,18 +34,14 @@ Future<String> sha256OfFile(
   }
 }
 
-/// How much of each end of a file the sampled hash reads: 1 MiB from the
-/// head, 1 MiB from the tail. Tags live at the ends (ID3v2 at the head,
-/// ID3v1 and APE at the tail; FLAC and MP4 keep theirs up front), so a
-/// retag moves this hash the way it moves the full one.
+/// Default bytes sampled from each end for a temporary work fingerprint.
 const int sampledSpan = 1024 * 1024;
 
-/// A fixed-budget identity hash: sha256 over the first [span] bytes, the
-/// last [span] bytes, and the file's size as eight little-endian bytes —
-/// so two files of different lengths never collide on shared ends. A
-/// file no longer than twice [span] hashes whole (plus the size), and the
-/// result is still not a plain sha256 of it: this is `HashKind.
-/// sampledSha256`, and is only ever compared with itself.
+/// Temporary fingerprint of head + tail + size (8-byte little-endian).
+/// Small files contribute all bytes once, then size. This is not a persistent
+/// identity: equal samples do not establish equal content. Never use it for
+/// move matching or deduplication. The scanner currently uses job/path identity
+/// for pending work and computes full SHA-256 before committing each file.
 Future<String> sampledSha256OfFile(
   String path, {
   FileSystem? fileSystem,

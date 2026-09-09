@@ -106,6 +106,51 @@ MediaDatabase openAtV2() {
 
 void main() => memoryTests(registerTests);
 void registerTests() {
+  test(
+    'v7 upgrade removes samples and preserves files and full fingerprints',
+    () async {
+      final raw = sqlite3.openInMemory();
+      var db = MediaDatabase(
+        NativeDatabase.opened(raw, closeUnderlyingOnClose: false),
+      );
+      final library = await LibraryRepository(
+        db,
+      ).createLibrary('Music', LibraryType.music);
+      final repo = ScannerRepository(db);
+      final file = await repo.upsertFileByPath(
+        path: '/music/old.mp3',
+        sizeBytes: 6,
+        modifiedAt: DateTime(2026),
+        metadata: const AudioMetadata(title: 'Old'),
+        scannedAt: DateTime(2026),
+      );
+      final item = await repo.ensureItem(library, file);
+      await db.customStatement(
+        "INSERT INTO file_hashes VALUES (?, 'sampledSha256', 'sample')",
+        [file],
+      );
+      await db.customStatement(
+        "INSERT INTO file_hashes VALUES (?, 'sha256', 'full')",
+        [file],
+      );
+      await db.customStatement('PRAGMA user_version = 7');
+      await db.close();
+      db = MediaDatabase(
+        NativeDatabase.opened(raw, closeUnderlyingOnClose: false),
+      );
+      try {
+        final hashes = await db.select(db.fileHashes).get();
+        expect(hashes, hasLength(1));
+        expect(hashes.single.kind, HashKind.sha256);
+        expect(hashes.single.value, 'full');
+        expect((await db.select(db.files).get()).single.id, file);
+        expect((await db.select(db.libraryItems).get()).single.id, item.itemId);
+      } finally {
+        await db.close();
+        raw.close();
+      }
+    },
+  );
   group('migrating v2 up', () {
     late MediaDatabase db;
 
@@ -114,7 +159,7 @@ void registerTests() {
 
     test('lands on the current version', () async {
       final row = await db.customSelect('PRAGMA user_version').getSingle();
-      expect(row.read<int>('user_version'), 7);
+      expect(row.read<int>('user_version'), 8);
     });
 
     test('the audio library type grows up into music', () async {
@@ -218,7 +263,7 @@ void registerTests() {
           );
       expect(await db.select(db.libraryRoots).get(), hasLength(1));
       final row = await db.customSelect('PRAGMA user_version').getSingle();
-      expect(row.read<int>('user_version'), 7);
+      expect(row.read<int>('user_version'), 8);
     });
   });
 }

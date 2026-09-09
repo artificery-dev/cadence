@@ -99,7 +99,6 @@ void registerTests() {
     associate: _covers,
 
     policy: const ScanPolicy(
-      identity: IdentityHash.sampled,
       artwork: ArtworkPolicy.deferred,
       thumbnailSide: 64,
     ),

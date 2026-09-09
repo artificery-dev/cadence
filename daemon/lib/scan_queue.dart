@@ -248,8 +248,7 @@ class PersistentScanQueue {
         job['attemptCount'] = (job['attemptCount'] as int) + 1;
         job['startedAt'] = DateTime.now().toUtc().toIso8601String();
         job['effectivePolicy'] = {
-          'identity': policy.identity.name,
-          'hashSpan': policy.hashSpan,
+          'identity': 'full',
           'artwork': policy.artwork.name,
           'thumbnailSide': policy.thumbnailSide,
         };

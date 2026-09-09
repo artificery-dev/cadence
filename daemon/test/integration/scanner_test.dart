@@ -756,55 +756,42 @@ void main() {
   });
 
   group('ScanPolicy', () {
-    test('the lean policy hashes on a budget under its own kind', () async {
-      // Bigger than twice the sampled span, so the middle is skipped.
+    test('lean policy stores full hashes for large and small files', () async {
       final big = write('big.mp3', 'x' * (3 * sampledSpan));
-      final small = write('small.mp3', 'small');
+      write('small.mp3', 'small');
       await scanner(policy: ScanPolicy.lean).scan(libraryId);
-
       final rows = await hashes();
-      expect(rows.where((h) => h.kind == HashKind.sha256), isEmpty);
-      final sampled = {
-        for (final h in rows)
-          if (h.kind == HashKind.sampledSha256) h.fileId: h.value,
-      };
-      expect(sampled, hasLength(2));
-
-      final bigRow = (await files()).singleWhere((r) => r.path == big);
-      expect(
-        sampled[bigRow.id],
-        await sampledSha256OfFile(big),
-        reason: 'the stored value is the hasher\'s own',
-      );
-      // Changing the middle of a big file leaves the sampled hash alone;
-      // that is the trade the policy makes, and it must be the same trade
-      // every time.
+      expect(rows, hasLength(2));
+      expect(rows.every((h) => h.kind == HashKind.sha256), isTrue);
+      for (final file in await files()) {
+        expect(
+          rows.singleWhere((h) => h.fileId == file.id).value,
+          crypto.sha256.convert(File(file.path).readAsBytesSync()).toString(),
+        );
+      }
+      final before = await sha256OfFile(big);
       final bytes = File(big).readAsBytesSync();
       bytes[sampledSpan + 10] = 0x79;
-      File(big).writeAsBytesSync(bytes, flush: true);
-      expect(await sampledSha256OfFile(big), sampled[bigRow.id]);
-      // A small file is not a plain sha256 either: the size is folded in.
-      final smallRow = (await files()).singleWhere((r) => r.path == small);
+      File(big).writeAsBytesSync(bytes);
+      expect(await sha256OfFile(big), isNot(before));
+    });
+
+    test('unchanged files without full hashes are indexed again', () async {
+      write('old.mp3', 'legacy');
+      await scanner().scan(libraryId);
+      final original = (await files()).single;
+      await db.delete(db.fileHashes).go();
+      final progress = await scanner(policy: ScanPolicy.lean).scan(libraryId);
+      expect(progress.updated, 1);
+      expect((await files()).single.id, original.id);
+      expect((await hashes()).single.kind, HashKind.sha256);
       expect(
-        sampled[smallRow.id],
-        isNot(crypto.sha256.convert(File(small).readAsBytesSync()).toString()),
+        (await scanner(policy: ScanPolicy.lean).scan(libraryId)).changed,
+        0,
       );
     });
 
-    test('the hash span is the policy\'s', () async {
-      final big = write('big.mp3', 'x' * 4096);
-      await scanner(
-        policy: const ScanPolicy(
-          identity: IdentityHash.sampled,
-          hashSpan: 1024,
-        ),
-      ).scan(libraryId);
-      final stored = (await hashes()).single.value;
-      expect(stored, await sampledSha256OfFile(big, span: 1024));
-      expect(stored, isNot(await sampledSha256OfFile(big)));
-    });
-
-    test('a move is recognised under the sampled hash too', () async {
+    test('a move is recognised with lean artwork policy', () async {
       final a = write('a.mp3', 'a' * (3 * sampledSpan));
       await scanner(policy: ScanPolicy.lean).scan(libraryId);
       final before = (await files()).single;
@@ -846,7 +833,6 @@ void main() {
 
         await scanner(
           policy: const ScanPolicy(
-            identity: IdentityHash.sampled,
             artwork: ArtworkPolicy.thumbnailsOnly,
             thumbnailSide: 96,
           ),
@@ -876,7 +862,7 @@ void main() {
       await scanner(policy: ScanPolicy.lean).scan(libraryId);
 
       final rows = await hashes();
-      expect(rows.single.kind, HashKind.sampledSha256);
+      expect(rows.single.kind, HashKind.sha256);
       expect((await artworks()).map((r) => r.role), [ArtworkRole.thumbnail]);
     });
   });

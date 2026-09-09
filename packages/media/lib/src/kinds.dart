@@ -47,11 +47,6 @@ enum HashKind {
   /// Content identity: the same bytes, the same hash.
   sha256,
 
-  /// Content identity on a budget: sha256 over the head, the tail, and
-  /// the size (see `IdentityHash.sampled`). Never compared with [sha256]
-  /// — a library is scanned under one or the other.
-  sampledSha256,
-
   /// Perceptual similarity, for images and eventually audio — near is near.
   perceptual,
 

@@ -201,7 +201,7 @@ class MediaDatabase extends _$MediaDatabase {
   MediaDatabase(super.executor);
 
   @override
-  int get schemaVersion => 7;
+  int get schemaVersion => 8;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -259,6 +259,13 @@ class MediaDatabase extends _$MediaDatabase {
         // v7: the videos library type says what it holds — movies.
         await customStatement(
           "UPDATE libraries SET type = 'movies' WHERE type = 'videos'",
+        );
+      }
+      if (from < 8) {
+        // Samples are not identities. Preserve files/items; the scanner fills in
+        // missing full hashes when their roots are next available.
+        await customStatement(
+          "DELETE FROM file_hashes WHERE kind = 'sampledSha256'",
         );
       }
     },

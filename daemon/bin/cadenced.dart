@@ -79,11 +79,7 @@ Future<void> run(List<String> args) async {
       autoStartJobs: false,
       policy: options['--policy'] == 'full'
           ? ScanPolicy.full
-          : const ScanPolicy(
-              identity: IdentityHash.sampled,
-              hashSpan: 256 * 1024,
-              artwork: ArtworkPolicy.deferred,
-            ),
+          : const ScanPolicy(artwork: ArtworkPolicy.deferred),
       buildExtractor: () =>
           MediaExtractor([...defaultMediaExtractor().tiers, ?probe]),
       watch: (coordinator) => LocalLibraryWatchService(

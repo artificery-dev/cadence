@@ -43,11 +43,7 @@ class MediaHost implements MediaTransport {
     String? cacheDirectory,
     bool nativeAvailable = false,
     bool autoStartJobs = true,
-    ScanPolicy policy = const ScanPolicy(
-      identity: IdentityHash.sampled,
-      hashSpan: 256 * 1024,
-      artwork: ArtworkPolicy.deferred,
-    ),
+    ScanPolicy policy = const ScanPolicy(artwork: ArtworkPolicy.deferred),
     ExtractorBuilder buildExtractor = defaultMediaExtractor,
     LibraryWatchService Function(ScanCoordinator)? watch,
   }) async {
@@ -175,8 +171,7 @@ class MediaHost implements MediaTransport {
         'watch': watchAvailable,
         'nativeExtraction': nativeAvailable,
         'policy': {
-          'identity': policy.identity.name,
-          'hashSpan': policy.hashSpan,
+          'identity': 'full',
           'artwork': policy.artwork.name,
           'thumbnailSide': policy.thumbnailSide,
         },

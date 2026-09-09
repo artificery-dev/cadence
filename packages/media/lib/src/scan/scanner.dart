@@ -108,10 +108,7 @@ class LibraryScanner {
     this.rootAvailable = _available,
   }) : fileSystem = fileSystem ?? mediaFileSystem,
        concurrency = concurrency ?? 2 {
-    if (batchSize < 1 ||
-        this.concurrency < 1 ||
-        policy.hashSpan < 1 ||
-        policy.thumbnailSide < 1) {
+    if (batchSize < 1 || this.concurrency < 1 || policy.thumbnailSide < 1) {
       throw ArgumentError("Scan budgets must be positive");
     }
   }
@@ -253,6 +250,11 @@ class LibraryScanner {
             row,
       ];
     }
+    // Legacy sampled-only records must be indexed even when their stat is unchanged.
+    final fullHashes = await (db.select(
+      db.fileHashes,
+    )..where((h) => h.kind.equalsValue(HashKind.sha256))).get();
+    final fullyHashed = {for (final hash in fullHashes) hash.fileId};
     final knownByPath = {for (final row in known) row.path: row};
     final missingRows = {
       for (final row in known)
@@ -272,7 +274,8 @@ class LibraryScanner {
             modifiedAt: file.modifiedAt,
           ),
         );
-      } else if (row.sizeBytes == file.sizeBytes &&
+      } else if (fullyHashed.contains(row.id) &&
+          row.sizeBytes == file.sizeBytes &&
           _sameSecond(row.modifiedAt, file.modifiedAt)) {
         fileIdByPath[file.path] = row.id;
         if (row.missingSince != null) await repo.clearMissing(row.id);
@@ -291,17 +294,14 @@ class LibraryScanner {
 
     out.changed = jobs.length;
 
-    // What a vanished row's bytes used to say — the move detector's index,
-    // consulted before any new row is written. Under the policy's own
-    // hash kind: a row hashed under the other policy is simply not a
-    // candidate, rather than a false stranger.
+    // Only full file hashes can establish identity for move matching.
     final missingBySha = <String, FileRow>{};
     if (missingRows.isNotEmpty) {
       final hashRows =
           await (db.select(db.fileHashes)..where(
                 (h) =>
                     h.fileId.isIn(missingRows.keys) &
-                    h.kind.equalsValue(policy.identity.kind),
+                    h.kind.equalsValue(HashKind.sha256),
               ))
               .get();
       for (final hash in hashRows) {
@@ -588,7 +588,7 @@ class LibraryScanner {
       fileIdByPath[job.path] = fileId;
       await repo.replaceHashes(fileId, {
         ...result.hashes,
-        policy.identity.kind: result.sha256!,
+        HashKind.sha256: result.sha256!,
       });
       // The worker has already dropped what the policy does not keep;
       // both roles are replaced regardless, so a policy change clears
@@ -759,13 +759,7 @@ Future<List<_JobResult>> _workWith(
   final policy = order.policy;
   for (final job in order.jobs) {
     try {
-      final sha = switch (policy.identity) {
-        IdentityHash.full => await sha256OfFile(job.path),
-        IdentityHash.sampled => await sampledSha256OfFile(
-          job.path,
-          span: policy.hashSpan,
-        ),
-      };
+      final sha = await sha256OfFile(job.path);
       final extracted = await extractor.extract(job.path, job.kind);
       final artwork = List<ExtractedArtwork>.of(extracted.artwork);
       if (policy.rendersThumbnails &&
