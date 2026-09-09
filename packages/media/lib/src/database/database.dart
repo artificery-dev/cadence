@@ -201,7 +201,7 @@ class MediaDatabase extends _$MediaDatabase {
   MediaDatabase(super.executor);
 
   @override
-  int get schemaVersion => 8;
+  int get schemaVersion => 9;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -268,9 +268,11 @@ class MediaDatabase extends _$MediaDatabase {
           "DELETE FROM file_hashes WHERE kind = 'sampledSha256'",
         );
       }
+      if (from < 9) await customStatement(_scanWorkSchema);
     },
     onCreate: (m) async {
       await m.createAll();
+      await customStatement(_scanWorkSchema);
       // The search index rides outside drift's table classes: FTS5 is a
       // virtual table, fed by the repositories on write.
       await customStatement(
@@ -283,3 +285,16 @@ class MediaDatabase extends _$MediaDatabase {
     },
   );
 }
+
+const _scanWorkSchema = '''
+CREATE TABLE scan_work (
+  library_id INTEGER NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
+  path TEXT NOT NULL,
+  size_bytes INTEGER NOT NULL,
+  modified_ms INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  stage TEXT NOT NULL CHECK(stage IN ('discover','metadata')),
+  file_id INTEGER REFERENCES files(id) ON DELETE CASCADE,
+  PRIMARY KEY(library_id,path)
+)
+''';

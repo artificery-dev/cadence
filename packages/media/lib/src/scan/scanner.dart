@@ -1,6 +1,7 @@
 import '../filesystem.dart';
 
-import 'dart:math' as math;
+import 'dart:convert';
+import 'scan_work.dart';
 
 import 'package:drift/drift.dart';
 import 'package:mime/mime.dart';
@@ -63,6 +64,9 @@ class ScanProgress {
   /// has nothing to announce.
   int changed = 0;
 
+  int discovered = 0;
+  int enriched = 0;
+
   /// Files the database had never met.
   int added = 0;
 
@@ -91,7 +95,7 @@ class ScanProgress {
   int get errorCount => errors.length;
 }
 
-/// Incremental library scanner. Extraction runs in bounded asynchronous batches
+/// Incremental library scanner. Discovery and enrichment run with bounded concurrency
 /// in the caller's filesystem scope; writes stay on the database owner.
 /// Disappearing files are annotated, never deleted. Unavailable or unreadable
 /// scopes are excluded from missing detection. Symlinks are skipped.
@@ -106,6 +110,8 @@ class LibraryScanner {
     this.batchSize = 8,
     this.policy = ScanPolicy.full,
     this.rootAvailable = _available,
+    this.onChange,
+    this.hashFile = sha256OfFile,
   }) : fileSystem = fileSystem ?? mediaFileSystem,
        concurrency = concurrency ?? 2 {
     if (batchSize < 1 || this.concurrency < 1 || policy.thumbnailSide < 1) {
@@ -115,9 +121,20 @@ class LibraryScanner {
 
   final FileSystem fileSystem;
 
+  /// Post-commit change hints. Clients can re-query items after any notification.
+  final void Function(Map<String, Object?> event)? onChange;
+  void _notify(Map<String, Object?> event) {
+    try {
+      onChange?.call(event);
+    } catch (_) {
+      /* Observers cannot undo commits. */
+    }
+  }
+
   static bool _available(String _) => true;
   final bool Function(String) rootAvailable;
   final MediaDatabase db;
+  final Future<String> Function(String path) hashFile;
 
   /// Hashing and artwork budget for this scan.
   final ScanPolicy policy;
@@ -126,7 +143,7 @@ class LibraryScanner {
   final SidecarAssociator associate;
   final int concurrency;
 
-  /// Cancellation is cooperative between files during walking and batches during extraction.
+  /// Retained batch budget for API compatibility; items now commit individually.
   final int batchSize;
 
   /// Scans library [libraryId] and returns the tally. [progress] lets a
@@ -160,8 +177,24 @@ class LibraryScanner {
   }) async {
     final out = progress ?? ScanProgress();
     final cancelled = shouldCancel ?? _never;
-    final stage = onStage ?? _quietly;
+    void stage(ScanState value) {
+      onStage?.call(value);
+      _notify({
+        'type': 'scan-phase-changed',
+        'libraryId': libraryId,
+        'phase': switch (value) {
+          ScanState.walking => 'scan',
+          ScanState.discovering => 'discover',
+          ScanState.extracting => 'metadata',
+          ScanState.finishing => 'finish',
+          _ => value.name,
+        },
+      });
+    }
+
     final repo = ScannerRepository(db);
+    final work = ScanWork(db);
+    final pending = await work.pending(libraryId);
 
     final library = await (db.select(
       db.libraries,
@@ -262,6 +295,7 @@ class LibraryScanner {
     };
 
     final jobs = <_ScanJob>[];
+    final enrichment = <_ScanJob>[];
     final fileIdByPath = <String, int>{};
     for (final file in walked.values) {
       final row = knownByPath[file.path];
@@ -276,9 +310,28 @@ class LibraryScanner {
         );
       } else if (fullyHashed.contains(row.id) &&
           row.sizeBytes == file.sizeBytes &&
-          _sameSecond(row.modifiedAt, file.modifiedAt)) {
+          _sameSecond(row.modifiedAt, file.modifiedAt) &&
+          (pending[file.path] == null ||
+              (pending[file.path]!.read<int>('modified_ms') ==
+                      file.modifiedAt.millisecondsSinceEpoch &&
+                  pending[file.path]!.read<int>('size_bytes') ==
+                      file.sizeBytes))) {
         fileIdByPath[file.path] = row.id;
         if (row.missingSince != null) await repo.clearMissing(row.id);
+        if (pending.containsKey(file.path)) {
+          final job = _ScanJob(
+            path: file.path,
+            kind: file.kind,
+            sizeBytes: file.sizeBytes,
+            modifiedAt: file.modifiedAt,
+            existingId: row.id,
+          );
+          if (pending[file.path]!.read<String>('stage') == 'metadata') {
+            enrichment.add(job);
+          } else {
+            jobs.add(job);
+          }
+        }
       } else {
         jobs.add(
           _ScanJob(
@@ -292,7 +345,40 @@ class LibraryScanner {
       }
     }
 
-    out.changed = jobs.length;
+    if (cancelled()) return out;
+    // Finish Scan by journaling work. No file contents are read in this phase.
+    await db.transaction(() async {
+      for (final job in jobs) {
+        await work.enqueue(
+          libraryId,
+          job.path,
+          job.sizeBytes,
+          job.modifiedAt,
+          job.kind.name,
+        );
+      }
+      for (final path in pending.keys) {
+        if (!walked.containsKey(path) &&
+            !unsafe.any(
+              (root) =>
+                  mediaPath.equals(root, path) ||
+                  mediaPath.isWithin(root, path),
+            ) &&
+            (onlyDirs == null ||
+                onlyDirs.any(
+                  (dir) => mediaPath.equals(dir, mediaPath.dirname(path)),
+                ))) {
+          await work.complete(libraryId, path);
+        }
+      }
+    });
+    out.changed = jobs.length + enrichment.length;
+    _notify({
+      'type': 'scan-work-queued',
+      'libraryId': libraryId,
+      'discover': jobs.length,
+      'metadata': enrichment.length,
+    });
 
     // Only full file hashes can establish identity for move matching.
     final missingBySha = <String, FileRow>{};
@@ -310,37 +396,104 @@ class LibraryScanner {
       }
     }
 
-    stage(ScanState.extracting);
-    final batches = <List<_ScanJob>>[
-      for (var i = 0; i < jobs.length; i += batchSize)
-        jobs.sublist(i, math.min(i + batchSize, jobs.length)),
-    ];
-    final local = buildExtractor();
+    stage(ScanState.discovering);
     var next = 0;
-    Future<void> work(int lane) async {
-      while (!cancelled() && next < batches.length) {
-        final order = _WorkOrder(
-          batches[next++],
-          buildExtractor,
-          renderThumbnail,
-          policy,
-        );
-        final results = await _workWith(local, order);
-        if (cancelled()) break;
-        await _writeResults(
-          repo,
-          libraryId,
-          results,
-          out,
-          fileIdByPath: fileIdByPath,
-          missingRows: missingRows,
-          missingBySha: missingBySha,
-        );
+    bool available(_ScanJob job) => roots.any(
+      (root) =>
+          mediaPath.isWithin(root.path, job.path) &&
+          rootAvailable(root.path) &&
+          mediaFileSystem.directory(root.path).existsSync(),
+    );
+    Future<void> discover() async {
+      while (!cancelled() && next < jobs.length) {
+        final job = jobs[next++];
+        try {
+          if (!available(job)) throw StateError('Root unavailable');
+          final before = await mediaFileSystem.file(job.path).stat();
+          final sha = await hashFile(job.path);
+          final after = await mediaFileSystem.file(job.path).stat();
+          if (before.size != job.sizeBytes ||
+              before.modified != job.modifiedAt ||
+              after.size != before.size ||
+              after.modified != before.modified) {
+            throw StateError('File changed during hashing; retry on next scan');
+          }
+          if (cancelled()) return;
+          if (!available(job)) throw StateError('Root unavailable');
+          final old = await repo.fileByPath(job.path);
+          final metadata =
+              old?.metadata ??
+              jsonEncode({
+                'title': mediaPath.basenameWithoutExtension(job.path),
+              });
+          await _writeResults(
+            repo,
+            libraryId,
+            [
+              _JobResult.ok(
+                job,
+                sha256: sha,
+                metadataJson: (jsonDecode(metadata) as Map)
+                    .cast<String, Object?>(),
+                artwork: const [],
+                hashes: const {},
+              ),
+            ],
+            out,
+            fileIdByPath: fileIdByPath,
+            missingRows: missingRows,
+            missingBySha: missingBySha,
+          );
+          out.discovered++;
+          enrichment.add(job);
+        } catch (error) {
+          out.errors.add(ScanError(job.path, '$error'));
+        }
         await Future<void>.delayed(Duration.zero);
       }
     }
 
-    await Future.wait([for (var i = 0; i < concurrency; i++) work(i)]);
+    await Future.wait([for (var i = 0; i < concurrency; i++) discover()]);
+    if (cancelled()) return out;
+
+    stage(ScanState.extracting);
+    final local = buildExtractor();
+    next = 0;
+    Future<void> enrich() async {
+      while (!cancelled() && next < enrichment.length) {
+        final job = enrichment[next++];
+        if (!available(job)) {
+          out.errors.add(ScanError(job.path, 'Root unavailable'));
+          continue;
+        }
+        final results = await _workWith(
+          local,
+          _WorkOrder([job], buildExtractor, renderThumbnail, policy),
+        );
+        if (cancelled()) return;
+        final result = results.single;
+        if (result.error != null) {
+          out.errors.add(ScanError(job.path, result.error!));
+          continue;
+        }
+        final stat = await mediaFileSystem.file(job.path).stat();
+        if (!available(job) ||
+            stat.size != job.sizeBytes ||
+            stat.modified != job.modifiedAt) {
+          out.errors.add(
+            ScanError(
+              job.path,
+              'File changed or root unavailable during metadata extraction',
+            ),
+          );
+          continue;
+        }
+        await _enrichResult(repo, libraryId, result, out);
+        await Future<void>.delayed(Duration.zero);
+      }
+    }
+
+    await Future.wait([for (var i = 0; i < concurrency; i++) enrich()]);
 
     if (cancelled()) return out;
     stage(ScanState.finishing);
@@ -369,11 +522,19 @@ class LibraryScanner {
     final withItems = {for (final row in itemRows) row.fileId};
     for (final MapEntry(key: path, value: fileId) in fileIdByPath.entries) {
       if (withItems.contains(fileId)) continue;
-      await repo.ensureItem(
+      final item = await repo.ensureItem(
         libraryId,
         fileId,
         tags: [Tag.ofFormat(formatTag(path))],
       );
+      _notify({
+        'type': 'media-item-added',
+        'libraryId': libraryId,
+        'itemId': item.itemId,
+        'fileId': fileId,
+        'path': path,
+        'phase': 'finish',
+      });
     }
 
     final matches = associate(
@@ -525,9 +686,8 @@ class LibraryScanner {
     return false;
   }
 
-  /// Lands one batch of worker results in a single transaction: moves
-  /// recognised before rows are born, files upserted in place, hashes and
-  /// artwork replaced, items ensured, the search index fed on the way.
+  /// Commits discovery results and metadata work atomically. Additions are
+  /// announced only after their file, identity, item and search entry exist.
   Future<void> _writeResults(
     ScannerRepository repo,
     int libraryId,
@@ -536,73 +696,169 @@ class LibraryScanner {
     required Map<String, int> fileIdByPath,
     required Map<int, FileRow> missingRows,
     required Map<String, FileRow> missingBySha,
-  }) => db.transaction(() async {
-    for (final result in results) {
-      final job = result.job;
-      if (result.error != null) {
-        out.errors.add(ScanError(job.path, result.error!));
-        continue;
-      }
-      final metadata = MediaMetadata.fromJson(job.kind, result.metadataJson!);
-      final scannedAt = DateTime.now();
-
-      FileRow? movedFrom;
-      if (job.isNew) {
-        final candidate = missingBySha.remove(result.sha256);
-        if (candidate != null &&
-            mediaFileSystem.file(candidate.path).existsSync()) {
-          // The bytes travelled but the original stayed — a copy, not a
-          // move. Put the candidate back for a scan that misses it.
-          missingBySha[result.sha256!] = candidate;
-        } else if (candidate != null) {
-          movedFrom = candidate;
+  }) async {
+    final events = <Map<String, Object?>>[];
+    await db.transaction(() async {
+      for (final result in results) {
+        final job = result.job;
+        if (result.error != null) {
+          out.errors.add(ScanError(job.path, result.error!));
+          continue;
         }
-      }
+        var metadata = MediaMetadata.fromJson(job.kind, result.metadataJson!);
+        final scannedAt = DateTime.now();
 
-      final int fileId;
-      if (movedFrom != null) {
-        await repo.rewritePath(movedFrom.id, job.path);
-        fileId = await repo.upsertFileByPath(
-          path: job.path,
-          sizeBytes: job.sizeBytes,
-          modifiedAt: job.modifiedAt,
-          metadata: metadata,
-          scannedAt: scannedAt,
-        );
-        missingRows.remove(movedFrom.id);
-        out.moved++;
-      } else {
-        fileId = await repo.upsertFileByPath(
-          path: job.path,
-          sizeBytes: job.sizeBytes,
-          modifiedAt: job.modifiedAt,
-          metadata: metadata,
-          scannedAt: scannedAt,
-        );
+        FileRow? movedFrom;
         if (job.isNew) {
-          out.added++;
+          final candidate = missingBySha.remove(result.sha256);
+          if (candidate != null &&
+              mediaFileSystem.file(candidate.path).existsSync()) {
+            // The bytes travelled but the original stayed — a copy, not a
+            // move. Put the candidate back for a scan that misses it.
+            missingBySha[result.sha256!] = candidate;
+          } else if (candidate != null) {
+            movedFrom = candidate;
+          }
+        }
+
+        final int fileId;
+        if (movedFrom != null) {
+          metadata = MediaMetadata.fromJson(
+            job.kind,
+            (jsonDecode(movedFrom.metadata) as Map).cast<String, Object?>(),
+          );
+          await repo.rewritePath(movedFrom.id, job.path);
+          fileId = await repo.upsertFileByPath(
+            path: job.path,
+            sizeBytes: job.sizeBytes,
+            modifiedAt: job.modifiedAt,
+            metadata: metadata,
+            scannedAt: scannedAt,
+          );
+          missingRows.remove(movedFrom.id);
+          out.moved++;
         } else {
-          out.updated++;
+          fileId = await repo.upsertFileByPath(
+            path: job.path,
+            sizeBytes: job.sizeBytes,
+            modifiedAt: job.modifiedAt,
+            metadata: metadata,
+            scannedAt: scannedAt,
+          );
+          if (job.isNew) {
+            out.added++;
+          } else {
+            out.updated++;
+          }
+        }
+        fileIdByPath[job.path] = fileId;
+        await repo.replaceHashes(fileId, {
+          ...result.hashes,
+          HashKind.sha256: result.sha256!,
+        });
+        final item = await repo.ensureItem(
+          libraryId,
+          fileId,
+          tags: [Tag.ofFormat(formatTag(job.path))],
+        );
+        await ScanWork(db).discovered(libraryId, job.path, fileId);
+        events.add({
+          'type': item.wasNew ? 'media-item-added' : 'media-item-updated',
+          'libraryId': libraryId,
+          'itemId': item.itemId,
+          'fileId': fileId,
+          'path': job.path,
+          'kind': job.kind.name,
+          'metadata': metadata.toJson(),
+          'phase': 'discover',
+        });
+      }
+    });
+    for (final event in events) {
+      _notify(event);
+    }
+  }
+
+  Future<void> _enrichResult(
+    ScannerRepository repo,
+    int libraryId,
+    _JobResult result,
+    ScanProgress out,
+  ) async {
+    final job = result.job;
+    final events = <Map<String, Object?>>[];
+    await db.transaction(() async {
+      final before = await repo.fileByPath(job.path);
+      if (before == null) throw StateError('Discovered file no longer exists');
+      final metadata = MediaMetadata.fromJson(job.kind, result.metadataJson!);
+      await repo.upsertFileByPath(
+        path: job.path,
+        sizeBytes: job.sizeBytes,
+        modifiedAt: job.modifiedAt,
+        metadata: metadata,
+        scannedAt: DateTime.now(),
+      );
+      final oldArtwork =
+          await (db.select(db.artworks)..where(
+                (a) =>
+                    a.fileId.equals(before.id) &
+                    (a.role.equalsValue(ArtworkRole.embedded) |
+                        a.role.equalsValue(ArtworkRole.thumbnail)),
+              ))
+              .get();
+      await repo.replaceArtwork(
+        before.id,
+        ArtworkRole.embedded,
+        result.artwork,
+      );
+      await repo.replaceArtwork(
+        before.id,
+        ArtworkRole.thumbnail,
+        result.artwork,
+      );
+      final old = (jsonDecode(before.metadata) as Map).cast<String, Object?>();
+      final updated = metadata.toJson();
+      final fields = {
+        for (final key in {...old.keys, ...updated.keys})
+          if (jsonEncode(old[key]) != jsonEncode(updated[key]))
+            key: updated[key],
+      };
+      final memberships = await (db.select(
+        db.libraryItems,
+      )..where((i) => i.fileId.equals(before.id))).get();
+      for (final member in memberships) {
+        await repo.ensureItem(
+          member.libraryId,
+          before.id,
+          tags: [Tag.ofFormat(formatTag(job.path))],
+        );
+        if (fields.isNotEmpty) {
+          events.add({
+            'type': 'media-item-field-update',
+            'libraryId': member.libraryId,
+            'itemId': member.id,
+            'fileId': before.id,
+            'fields': fields,
+            'phase': 'metadata',
+          });
         }
       }
-      fileIdByPath[job.path] = fileId;
-      await repo.replaceHashes(fileId, {
-        ...result.hashes,
-        HashKind.sha256: result.sha256!,
+      await ScanWork(db).complete(libraryId, job.path);
+      events.add({
+        'type': 'media-item-enriched',
+        'libraryId': libraryId,
+        'fileId': before.id,
       });
-      // The worker has already dropped what the policy does not keep;
-      // both roles are replaced regardless, so a policy change clears
-      // what an earlier scan wrote.
-      await repo.replaceArtwork(fileId, ArtworkRole.embedded, result.artwork);
-      await repo.replaceArtwork(fileId, ArtworkRole.thumbnail, result.artwork);
-      out.artwork += result.artwork.length;
-      await repo.ensureItem(
-        libraryId,
-        fileId,
-        tags: [Tag.ofFormat(formatTag(job.path))],
-      );
+      if (oldArtwork.isNotEmpty || result.artwork.isNotEmpty) {
+        events.add({'type': 'media-artwork-updated', 'fileId': before.id});
+      }
+    });
+    out.enriched++;
+    out.artwork += result.artwork.length;
+    for (final event in events) {
+      _notify(event);
     }
-  });
+  }
 
   /// Attaches the directory's art to a file — and, when the file still has
   /// no thumbnail of its own, renders one from that art. A thumbnail
@@ -614,8 +870,18 @@ class LibraryScanner {
     Map<String, List<int>> cache,
     ScanProgress out,
   ) async {
+    final oldFolder =
+        await (db.select(db.artworks)..where(
+              (a) =>
+                  a.fileId.equals(fileId) &
+                  a.role.equalsValue(ArtworkRole.folder),
+            ))
+            .get();
     if (art.isEmpty || !policy.rendersThumbnails) {
       await repo.replaceArtwork(fileId, ArtworkRole.folder, const []);
+      if (oldFolder.isNotEmpty) {
+        _notify({'type': 'media-artwork-updated', 'fileId': fileId});
+      }
       return;
     }
     final entries = <ExtractedArtwork>[];
@@ -642,6 +908,9 @@ class LibraryScanner {
       kept ? entries : const [],
     );
     if (kept) out.artwork += entries.length;
+    if (oldFolder.isNotEmpty || (kept && entries.isNotEmpty)) {
+      _notify({'type': 'media-artwork-updated', 'fileId': fileId});
+    }
     if (entries.isEmpty || await _hasThumbnail(fileId)) return;
     ExtractedArtwork? thumb;
     try {
@@ -655,6 +924,7 @@ class LibraryScanner {
     if (thumb == null) return;
     await repo.replaceArtwork(fileId, ArtworkRole.thumbnail, [thumb]);
     out.artwork++;
+    _notify({'type': 'media-artwork-updated', 'fileId': fileId});
   }
 
   Future<bool> _hasThumbnail(int fileId) async {
@@ -677,8 +947,6 @@ bool _sameSecond(DateTime a, DateTime b) =>
     a.millisecondsSinceEpoch ~/ 1000 == b.millisecondsSinceEpoch ~/ 1000;
 
 bool _never() => false;
-
-void _quietly(ScanState _) {}
 
 /// A file the walk found and stat'd, waiting for the diff.
 class _WalkedFile {
@@ -731,7 +999,7 @@ class _WorkOrder {
 class _JobResult {
   const _JobResult.ok(
     this.job, {
-    required String this.sha256,
+    this.sha256,
     required Map<String, Object?> this.metadataJson,
     required this.artwork,
     required this.hashes,
@@ -759,7 +1027,6 @@ Future<List<_JobResult>> _workWith(
   final policy = order.policy;
   for (final job in order.jobs) {
     try {
-      final sha = await sha256OfFile(job.path);
       final extracted = await extractor.extract(job.path, job.kind);
       final artwork = List<ExtractedArtwork>.of(extracted.artwork);
       if (policy.rendersThumbnails &&
@@ -775,7 +1042,6 @@ Future<List<_JobResult>> _workWith(
       results.add(
         _JobResult.ok(
           job,
-          sha256: sha,
           metadataJson: extracted.metadata.toJson(),
           artwork: [
             for (final art in artwork)

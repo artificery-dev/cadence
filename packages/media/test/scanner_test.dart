@@ -432,7 +432,7 @@ void registerTests() {
     });
 
     test(
-      'a file whose extraction throws lands in errors; the scan walks on',
+      'failed enrichment leaves a minimal item; the scan walks on',
       () async {
         write('good_one.mp3', 'fine');
         write('boom.mp3', 'cursed');
@@ -444,8 +444,8 @@ void registerTests() {
 
         expect(progress.errors, hasLength(1));
         expect(progress.errors.single.path, endsWith('boom.mp3'));
-        expect(progress.added, 2);
-        expect(await items(), hasLength(2));
+        expect(progress.added, 3);
+        expect(await items(), hasLength(3));
       },
     );
 

@@ -41,8 +41,14 @@ Future<void> runDemo(ToolContext context, String? executable) async {
     await ready.future.timeout(const Duration(seconds: 60));
     client = CadenceClient(UnixMediaTransport(socket));
     final observed = Completer<void>();
+    final added = Completer<void>();
+    final enriched = Completer<void>();
     subscription = client.events.listen((event) {
       stdout.writeln(jsonEncode({'notification': event}));
+      if (event['type'] == 'media-item-added' && !added.isCompleted)
+        added.complete();
+      if (event['type'] == 'media-item-field-update' && !enriched.isCompleted)
+        enriched.complete();
       if (!observed.isCompleted) observed.complete();
     });
     await observed.future;
@@ -59,6 +65,10 @@ Future<void> runDemo(ToolContext context, String? executable) async {
     } while (status['finishedAt'] == null);
     if (status['state'] != 'done' || status['errorCount'] != 0)
       throw StateError('Fixture scan failed: $status');
+    await Future.wait([
+      added.future,
+      enriched.future,
+    ]).timeout(const Duration(seconds: 5));
     await subscription.cancel();
     subscription = null;
     await client.close();

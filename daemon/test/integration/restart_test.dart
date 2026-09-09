@@ -52,12 +52,27 @@ void main() {
       await client.addRoot(lib, music.path);
       final nextLib = await client.createLibrary('Next', 'music');
       await client.addRoot(nextLib, music.path);
+      final added = Completer<Map<String, Object?>>();
+      final connected = Completer<void>();
+      final events = client.events.listen(
+        (event) {
+          if (!connected.isCompleted) connected.complete();
+          if (event['type'] == 'media-item-added' && !added.isCompleted)
+            added.complete(event);
+        },
+        onError: (Object _) {
+          /* SIGKILL deliberately severs the stream. */
+        },
+      );
+      await connected.future.timeout(const Duration(seconds: 5));
       final job = await client.scan(lib);
       final nextJob = await client.scan(nextLib);
       expect((await client.job(nextJob['jobId'] as String))['state'], 'queued');
       expect(job['finishedAt'], isNull);
+      final firstItem = await added.future.timeout(const Duration(seconds: 30));
       process.kill(ProcessSignal.sigkill);
       await process.exitCode;
+      await events.cancel();
       process = null;
       await client.close();
       process = await start(dir.path);
@@ -74,7 +89,15 @@ void main() {
       final recovered = await wait(job['jobId'] as String);
       expect(recovered['state'], 'done');
       expect(recovered['attemptCount'], 2);
+      expect(recovered['discovered'] as int, lessThan(2000));
       expect((recovered['attempts'] as List).first['state'], 'interrupted');
+      final restoredItems = await client.items(lib);
+      expect(
+        restoredItems.where(
+          (item) => (item as Map)['fileId'] == firstItem['fileId'],
+        ),
+        hasLength(1),
+      );
       final next = await wait(nextJob['jobId'] as String);
       expect(next['state'], 'done');
       expect(next['attemptCount'], 1);

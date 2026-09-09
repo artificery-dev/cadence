@@ -50,6 +50,8 @@ class ScanStatus {
     required this.state,
     this.seen = 0,
     this.changed = 0,
+    this.discovered = 0,
+    this.enriched = 0,
     this.added = 0,
     this.updated = 0,
     this.moved = 0,
@@ -68,6 +70,8 @@ class ScanStatus {
     state: ScanState.values.byName(json['state'] as String),
     seen: json['seen'] as int? ?? 0,
     changed: json['changed'] as int? ?? 0,
+    discovered: json['discovered'] as int? ?? 0,
+    enriched: json['enriched'] as int? ?? 0,
     added: json['added'] as int? ?? 0,
     updated: json['updated'] as int? ?? 0,
     moved: json['moved'] as int? ?? 0,
@@ -101,6 +105,8 @@ class ScanStatus {
   /// through, and what [added] plus [updated] climb towards. Zero means
   /// the library was already up to date.
   final int changed;
+  final int discovered;
+  final int enriched;
   final int added;
   final int updated;
   final int moved;

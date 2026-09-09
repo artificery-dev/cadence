@@ -312,7 +312,7 @@ void registerTests() {
     });
 
     test(
-      'a cancel stops between batches; the next scan finishes the job',
+      'cancelled enrichment preserves discovered items; the next scan finishes metadata',
       () async {
         final gate = Completer<void>();
         final tier = _GatedTier(gate.future);
@@ -339,8 +339,7 @@ void registerTests() {
         await gated.addRoot(lib, temp.path);
 
         expect((await gated.scan(lib)).status, 202);
-        // The first file is on the tier's doorstep — the scan is provably
-        // mid-batch, so the cancel below lands between batches, not before.
+        // Discovery committed all items; the first metadata extraction is blocked.
         await tier.entered.future;
         expect(await gated.cancelScan(lib), isTrue);
         gate.complete();
@@ -350,14 +349,17 @@ void registerTests() {
         expect(cancelled.seen, 3);
         expect(
           cancelled.added,
-          0,
-          reason: 'cancelled batches are discarded before database writes',
+          3,
+          reason: 'Discovery commits survive metadata cancellation',
         );
-        expect(await gated.mediaItems(lib), isEmpty);
+        expect(cancelled.enriched, 0);
+        expect(await gated.mediaItems(lib), hasLength(3));
 
         final resumed = await _scan(gated, lib, after: cancelled.finishedAt);
         expect(resumed.state, ScanState.done);
-        expect(resumed.added, 3);
+        expect(resumed.added, 0);
+        expect(resumed.discovered, 0);
+        expect(resumed.enriched, 3);
         expect(await gated.mediaItems(lib), hasLength(3));
       },
     );

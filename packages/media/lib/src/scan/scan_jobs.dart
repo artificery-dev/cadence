@@ -12,7 +12,10 @@ enum ScanState {
   /// Walking roots and diffing against the database.
   walking,
 
-  /// Files moving through the worker pool.
+  /// Full hashing and minimal, immediately browseable library insertion.
+  discovering,
+
+  /// Metadata enrichment of already discoverable files.
   extracting,
 
   /// Missing marks, sidecars, folder art — the epilogue.
@@ -29,7 +32,10 @@ enum ScanState {
 
   /// Whether a scan is actually in motion.
   bool get running =>
-      this == walking || this == extracting || this == finishing;
+      this == walking ||
+      this == discovering ||
+      this == extracting ||
+      this == finishing;
 }
 
 /// One look at a library's scan: the state, the counters, the clock. The
@@ -67,9 +73,19 @@ class ScanSnapshot {
     final progress = this.progress;
     return {
       'state': state.name,
+      if (state != ScanState.idle)
+        'phase': switch (state) {
+          ScanState.walking => 'scan',
+          ScanState.discovering => 'discover',
+          ScanState.extracting => 'metadata',
+          ScanState.finishing => 'finish',
+          _ => state.name,
+        },
       if (progress != null) ...{
         'seen': progress.seen,
         'changed': progress.changed,
+        'discovered': progress.discovered,
+        'enriched': progress.enriched,
         'added': progress.added,
         'updated': progress.updated,
         'moved': progress.moved,

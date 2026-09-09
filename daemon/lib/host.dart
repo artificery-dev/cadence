@@ -52,10 +52,16 @@ class MediaHost implements MediaTransport {
     _owners[database] = true;
     return withMediaFileSystem(fileSystem, () async {
       final availability = <String, bool>{};
+      MediaHost? activeHost;
+      void changed(Map<String, Object?> event) =>
+          activeHost?._emit(event['type'] as String, event);
+
       final artwork = ArtworkQueue(
         database,
         buildExtractor: buildExtractor,
         thumbnailSide: policy.thumbnailSide,
+        onArtworkChanged: (fileId) =>
+            changed({'type': 'media-artwork-updated', 'fileId': fileId}),
       );
       final coordinator = ScanCoordinator(
         database,
@@ -63,6 +69,7 @@ class MediaHost implements MediaTransport {
           database,
           buildExtractor: buildExtractor,
           policy: policy,
+          onChange: changed,
           rootAvailable: (path) => availability[path] != false,
         ),
         onFinished: (id) => unawaited(artwork.sweep(id)),
@@ -84,6 +91,7 @@ class MediaHost implements MediaTransport {
         watch != null,
         nativeAvailable,
       );
+      activeHost = host;
       await database.customStatement(
         'CREATE TABLE IF NOT EXISTS daemon_jobs (id TEXT PRIMARY KEY, body TEXT NOT NULL)',
       );
@@ -114,9 +122,14 @@ class MediaHost implements MediaTransport {
     });
   }
 
-  void _emit(String type) {
+  void _emit(String type, [Map<String, Object?> data = const {}]) {
     if (!_events.isClosed)
-      _events.add({'type': type, 'epoch': epoch, 'revision': ++_sequence});
+      _events.add({
+        ...data,
+        'type': type,
+        'epoch': epoch,
+        'revision': ++_sequence,
+      });
   }
 
   /// A client owns its connection, never this host's lifetime.
@@ -177,6 +190,15 @@ class MediaHost implements MediaTransport {
         },
         'restart': 'automatic-incremental-retry',
         'scanQueue': 'durable-fifo',
+        'scanPhases': ['scan', 'discover', 'metadata', 'finish'],
+        'itemEvents': [
+          'media-item-added',
+          'media-item-updated',
+          'media-item-field-update',
+          'media-item-enriched',
+          'media-artwork-updated',
+        ],
+        'eventRecovery': 'snapshot-and-query',
         'artwork': 'binary',
         'notifications': 'snapshot-invalidation',
       };
@@ -193,6 +215,20 @@ class MediaHost implements MediaTransport {
         'revision': _sequence,
         'jobs': _queue.snapshots,
         'queue': _queue.status,
+        'pendingWork': [
+          for (final row
+              in await db
+                  .customSelect(
+                    'SELECT library_id,path,stage,file_id FROM scan_work ORDER BY library_id,path',
+                  )
+                  .get())
+            {
+              'libraryId': row.read<int>('library_id'),
+              'path': row.read<String>('path'),
+              'stage': row.read<String>('stage'),
+              'fileId': row.readNullable<int>('file_id'),
+            },
+        ],
         ...libraries.body,
         'roots': [
           for (final root in await db.select(db.libraryRoots).get())

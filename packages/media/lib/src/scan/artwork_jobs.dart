@@ -36,6 +36,7 @@ class ArtworkQueue {
     this.buildExtractor = defaultMediaExtractor,
     this.renderThumbnail = images.renderThumbnail,
     this.thumbnailSide = 256,
+    this.onArtworkChanged,
   }) : fileSystem = fileSystem ?? mediaFileSystem,
        _repo = ScannerRepository(db);
 
@@ -47,6 +48,7 @@ class ArtworkQueue {
   final ExtractorBuilder buildExtractor;
   final ThumbnailRenderer renderThumbnail;
   final int thumbnailSide;
+  final void Function(int fileId)? onArtworkChanged;
 
   final _queue = ListQueue<int>();
   final _queued = <int>{};
@@ -243,6 +245,9 @@ class ArtworkQueue {
       ),
     ]);
     this.rendered++;
+    try {
+      onArtworkChanged?.call(fileId);
+    } catch (_) {}
     return _stored(fileId);
   }
 }
