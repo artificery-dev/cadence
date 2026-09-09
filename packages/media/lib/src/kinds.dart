@@ -47,11 +47,10 @@ enum HashKind {
   /// Content identity: the same bytes, the same hash.
   sha256,
 
-  /// Perceptual similarity, for images and eventually audio — near is near.
+  /// Reserved storage kind for a future perceptual fingerprint implementation.
   perceptual,
 
-  /// A 64-bit SimHash of a document's normalized text, hex — prose that
-  /// merely re-flowed still hashes close.
+  /// Reserved storage kind for a future text fingerprint implementation.
   textSimhash,
 }
 

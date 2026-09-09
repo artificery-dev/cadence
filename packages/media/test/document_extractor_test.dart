@@ -1,10 +1,8 @@
 import 'test_filesystem.dart';
-import 'dart:convert';
 import 'package:cadence_media/src/filesystem.dart';
 
 import 'package:cadence_media/src/extract/document_extractor.dart';
 import 'package:cadence_media/src/extract/extractor.dart';
-import 'package:cadence_media/src/extract/simhash.dart';
 import 'package:cadence_media/src/kinds.dart';
 import 'package:cadence_media/src/metadata.dart';
 import 'package:path/path.dart' as p;
@@ -13,10 +11,6 @@ import 'package:test/test.dart'
 
 import 'fixtures.dart';
 
-/// The document tier's contract: PDFs surrender their Info dict and page
-/// count, EPUBs their OPF metadata and a text simhash, text files their
-/// filename — and the pinned SimHash algorithm reproduces its published
-/// vectors bit for bit.
 void main() => memoryTests(registerTests);
 void registerTests() {
   const extractor = DocumentExtractor();
@@ -49,7 +43,7 @@ void registerTests() {
       expect(metadata.extra['CreationDate'], '2020-05-17T10:30:00Z');
     });
 
-    test('computes no simhash — that ground belongs to the probe', () async {
+    test('does not calculate text fingerprints', () async {
       final result = await extractor.extract(
         Fixtures.infoPdf,
         MediaKind.document,
@@ -105,25 +99,18 @@ void registerTests() {
       expect(metadata.extra['dc:date'], '2020-05-17');
     });
 
-    test('hashes the chapter prose, tags stripped', () async {
+    test('does not calculate chapter fingerprints', () async {
       final result = await extractor.extract(
         Fixtures.bookEpub,
         MediaKind.document,
       );
-      const prose =
-          'Chapter One Chapter One The fixture book opens, as all fixture '
-          'books must, with a paragraph that exists so a simhash has '
-          'something to shingle. It is short, it is plain, and it repeats '
-          'itself just enough to be recognisable when a test rewords it '
-          'slightly. The fixture book closes, as all fixture books must, '
-          'one paragraph later.';
-      expect(result!.hashes[HashKind.textSimhash], simHash(prose));
+      expect(result!.hashes, isEmpty);
     });
   });
 
   group('notes.txt', () {
     test(
-      'takes its title from the filename and its hash from the words',
+      'takes its title from the filename without a content fingerprint',
       () async {
         final result = await extractor.extract(
           Fixtures.notesTxt,
@@ -132,10 +119,7 @@ void registerTests() {
         final metadata = result!.metadata as DocumentMetadata;
 
         expect(metadata.title, 'notes');
-        expect(
-          result.hashes[HashKind.textSimhash],
-          simHash(mediaFileSystem.file(Fixtures.notesTxt).readAsStringSync()),
-        );
+        expect(result.hashes, isEmpty);
       },
     );
   });
@@ -173,73 +157,6 @@ void registerTests() {
       expect(await extractor.extract(bad.path, MediaKind.document), isNull);
     });
   });
-
-  group('simhash', () {
-    const notes = '''
-Notes on the fixture corpus.
-
-Plain text is the humblest document format: no metadata, no structure, just
-words. An extractor meeting this file should take its title from the
-filename and its simhash from these very sentences, which exist so a test
-can reword them slightly and measure how little the hash moves.
-''';
-    const notesReworded = '''
-Notes on the fixture corpus.
-
-Plain text is the humblest document format: no metadata, no structure, only
-words. An extractor reading this file should take its title from the
-filename and its simhash from these very sentences, which exist so a test
-can reword them slightly and see how little the hash moves.
-''';
-    const unrelated =
-        'Meanwhile, in an entirely different register, a weather system '
-        'crossed the mountains overnight, dropping snow on the passes and '
-        'closing two of the three roads into the valley before dawn.';
-
-    test('punctuation and case wash out in normalization', () {
-      expect(simHash('Hello,   World! Foo'), simHash('hello world foo'));
-      expect(simHash('café — naïve'), simHash('caf na ve'));
-    });
-
-    test('nothing left after normalization pins to the FNV offset basis', () {
-      expect(simHash(''), 'cbf29ce484222325');
-      expect(simHash('—— ··· ¡¿!?'), simHash(''));
-    });
-
-    test('reworded prose stays close', () {
-      final distance = hammingDistance(simHash(notes), simHash(notesReworded));
-      expect(distance, lessThanOrEqualTo(12));
-    });
-
-    test('unrelated prose lands far apart', () {
-      final distance = hammingDistance(simHash(notes), simHash(unrelated));
-      expect(distance, greaterThanOrEqualTo(20));
-    });
-
-    test('hamming distance counts bits, not characters', () {
-      expect(hammingDistance('cbf29ce484222325', 'cbf29ce484222325'), 0);
-      expect(hammingDistance('0000000000000000', 'ffffffffffffffff'), 64);
-      expect(hammingDistance('0000000000000001', '0000000000000003'), 1);
-    });
-
-    test('the published vectors reproduce — the cross-tier contract', () {
-      final file = mediaFileSystem.file(
-        p.join(Fixtures.root, 'simhash_vectors.json'),
-      );
-      final vectors = (jsonDecode(file.readAsStringSync()) as List)
-          .cast<Map<String, Object?>>();
-
-      expect(vectors, hasLength(6));
-      for (final vector in vectors) {
-        expect(
-          simHash(vector['text']! as String),
-          vector['hashHex'],
-          reason: 'vector: ${vector['text']}',
-        );
-      }
-    });
-  });
-
   group('corrupt input', () {
     test('every format cut at 10% and 50% answers or abstains', () async {
       final dir = mediaFileSystem.systemTempDirectory.createTempSync(

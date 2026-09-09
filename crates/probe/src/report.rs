@@ -1,5 +1,5 @@
 //! The probe's answer sheet: typed fields under the Dart `MediaMetadata`
-//! JSON names, raw tags in `extra`, pictures and fingerprints alongside.
+//! JSON names, raw tags in `extra`, pictures alongside.
 //!
 //! Fields fill first-wins — the best-informed source speaks first and the
 //! rest only fill silence — which mirrors how the Dart facade merges tiers.
@@ -12,8 +12,6 @@ pub struct Report {
     fields: Map<String, Value>,
     extra: Map<String, Value>,
     artwork: Vec<Artwork>,
-    pub phash64: Option<String>,
-    pub simhash64: Option<String>,
 }
 
 pub struct Artwork {
@@ -29,8 +27,6 @@ impl Report {
             fields: Map::new(),
             extra: Map::new(),
             artwork: Vec::new(),
-            phash64: None,
-            simhash64: None,
         }
     }
 
@@ -144,10 +140,6 @@ impl Report {
         });
     }
 
-    pub fn artwork(&self) -> &[Artwork] {
-        &self.artwork
-    }
-
     /// The `ok` payload, exactly as probe.dart expects to read it.
     pub fn to_json(&self) -> Value {
         let engine = base64::engine::general_purpose::STANDARD;
@@ -167,12 +159,6 @@ impl Report {
         ok.insert("fields".into(), Value::Object(self.fields.clone()));
         ok.insert("extra".into(), Value::Object(self.extra.clone()));
         ok.insert("artwork".into(), Value::Array(artwork));
-        if let Some(hash) = &self.phash64 {
-            ok.insert("phash64".into(), Value::from(hash.clone()));
-        }
-        if let Some(hash) = &self.simhash64 {
-            ok.insert("simhash64".into(), Value::from(hash.clone()));
-        }
         Value::Object(ok)
     }
 }

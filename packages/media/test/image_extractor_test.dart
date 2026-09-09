@@ -5,7 +5,6 @@ import 'dart:typed_data';
 import 'package:cadence_media/src/database/database.dart';
 import 'package:cadence_media/src/extract/extractor.dart';
 import 'package:cadence_media/src/extract/image_extractor.dart';
-import 'package:cadence_media/src/extract/phash.dart';
 import 'package:cadence_media/src/kinds.dart';
 import 'package:cadence_media/src/metadata.dart';
 import 'package:image/image.dart' as img;
@@ -128,50 +127,10 @@ void registerTests() {
     });
   });
 
-  group('perceptual hash', () {
-    test('rides out of extraction as sixteen hex digits', () async {
-      final result = await extractor.extract(Fixtures.tinyPng, MediaKind.image);
-      expect(
-        result!.hashes[HashKind.perceptual],
-        matches(RegExp(r'^[0-9a-f]{16}$')),
-      );
-    });
-
-    test('the same image hashes the same, every time', () {
-      final bytes = mediaFileSystem.file(Fixtures.tinyPng).readAsBytesSync();
-      expect(perceptualHash(bytes), perceptualHash(bytes));
-      expect(
-        hammingDistance(perceptualHash(bytes)!, perceptualHash(bytes)!),
-        0,
-      );
-    });
-
-    test('a re-encode drifts a few bits at most', () async {
-      final pngBytes = mediaFileSystem.file(Fixtures.tinyPng).readAsBytesSync();
-      final decoded = img.decodeImage(pngBytes)!;
-      final reencoded = img.encodeJpg(decoded, quality: 80);
-      final distance = hammingDistance(
-        perceptualHash(pngBytes)!,
-        perceptualHash(reencoded)!,
-      );
-      expect(distance, lessThanOrEqualTo(6));
-    });
-
-    test('different images land far apart', () {
-      final distance = hammingDistance(
-        perceptualHash(
-          mediaFileSystem.file(Fixtures.tinyPng).readAsBytesSync(),
-        )!,
-        perceptualHash(
-          mediaFileSystem.file(Fixtures.coverJpg).readAsBytesSync(),
-        )!,
-      );
-      expect(distance, greaterThan(10));
-    });
-
-    test('undecodable bytes hash to nothing', () {
-      expect(perceptualHash('not an image'.codeUnits), isNull);
-    });
+  test('image metadata and artwork do not calculate fingerprints', () async {
+    final result = await extractor.extract(Fixtures.tinyPng, MediaKind.image);
+    expect(result!.hashes, isEmpty);
+    expect(result.artwork, isNotEmpty);
   });
 
   group('renderThumbnail', () {

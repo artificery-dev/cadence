@@ -11,17 +11,9 @@ import '../kinds.dart';
 import '../metadata.dart';
 import 'extractor.dart';
 import 'image_extractor.dart';
-import 'simhash.dart';
 
-/// The pure-Dart document tier: PDF Info dicts, EPUB packages, and the
-/// humble text file.
-///
-/// PDFs give up their Info dictionary and page count; a malformed one
-/// degrades to nothing, and the facade's filename fallback serves. EPUBs
-/// yield their OPF metadata and, from the concatenated chapter prose, a
-/// [HashKind.textSimhash]. Text files claim their filename as title and
-/// hash their own words. PDF text stays unhashed in this tier — the current Dart tier
-/// does not extract it; the Rust probe covers that ground.
+/// Document metadata and artwork extraction. Content fingerprints are reserved
+/// for a future implementation; chapter/PDF text is not read for hashing.
 class DocumentExtractor implements MetadataExtractor {
   const DocumentExtractor({this.fileSystem});
   final FileSystem? fileSystem;
@@ -112,11 +104,6 @@ class DocumentExtractor implements MetadataExtractor {
       if (date != null && date.isNotEmpty) extra['dc:date'] = date;
       final subjects = metadata?.subjects ?? const [];
       if (subjects.isNotEmpty) extra['dc:subject'] = subjects;
-      final html = StringBuffer();
-      for (final chapter in book.getChapters()) {
-        await _chapterHtml(chapter, html);
-      }
-      final prose = _stripHtml(html.toString());
       return ExtractionResult(
         metadata: DocumentMetadata(
           title: book.title ?? '',
@@ -131,9 +118,6 @@ class DocumentExtractor implements MetadataExtractor {
           description: metadata?.description,
           extra: extra,
         ),
-        hashes: {
-          if (prose.trim().isNotEmpty) HashKind.textSimhash: simHash(prose),
-        },
       );
     } catch (_) {
       return null;
@@ -240,35 +224,9 @@ class DocumentExtractor implements MetadataExtractor {
     );
   }
 
-  Future<ExtractionResult?> _txt(String path) async {
-    try {
-      final text = utf8.decode(
-        await mediaFileSystem.file(path).readAsBytes(),
-        allowMalformed: true,
-      );
-      return ExtractionResult(
-        metadata: DocumentMetadata(
-          title: mediaPath.basenameWithoutExtension(path),
-        ),
-        hashes: {
-          if (text.trim().isNotEmpty) HashKind.textSimhash: simHash(text),
-        },
-      );
-    } catch (_) {
-      return null;
-    }
-  }
-
-  Future<void> _chapterHtml(EpubChapterRef chapter, StringBuffer out) async {
-    if (chapter.epubTextContentFileRef != null) {
-      out
-        ..write(await chapter.readHtmlContent())
-        ..write(' ');
-    }
-    for (final sub in chapter.subChapters) {
-      await _chapterHtml(sub, out);
-    }
-  }
+  Future<ExtractionResult?> _txt(String path) async => ExtractionResult(
+    metadata: DocumentMetadata(title: mediaPath.basenameWithoutExtension(path)),
+  );
 
   String? _first(List<String>? values) =>
       values?.where((value) => value.isNotEmpty).firstOrNull;
@@ -291,36 +249,6 @@ class DocumentExtractor implements MetadataExtractor {
     }
     return null;
   }
-
-  /// Chapter XHTML flattened to prose: comments, scripts, and styles
-  /// dropped whole, remaining tags become spaces, and the common entities
-  /// come back as their characters. The simhash normalizer sweeps up the
-  /// rest.
-  String _stripHtml(String html) => html
-      .replaceAll(RegExp(r'<!--.*?-->', dotAll: true), ' ')
-      .replaceAll(
-        RegExp(
-          r'<(script|style)[^>]*>.*?</\1>',
-          caseSensitive: false,
-          dotAll: true,
-        ),
-        ' ',
-      )
-      .replaceAll(RegExp(r'<[^>]+>'), ' ')
-      .replaceAllMapped(
-        RegExp(r'&#x([0-9a-fA-F]+);'),
-        (m) => String.fromCharCode(int.parse(m[1]!, radix: 16)),
-      )
-      .replaceAllMapped(
-        RegExp(r'&#(\d+);'),
-        (m) => String.fromCharCode(int.parse(m[1]!)),
-      )
-      .replaceAll('&lt;', '<')
-      .replaceAll('&gt;', '>')
-      .replaceAll('&quot;', '"')
-      .replaceAll('&apos;', "'")
-      .replaceAll('&nbsp;', ' ')
-      .replaceAll('&amp;', '&');
 
   /// PDF dates arrive as `D:YYYYMMDDHHmmSS` with an optional `Z` or
   /// `±HH'mm'` tail. This rewrites them as ISO-8601, keeping only the

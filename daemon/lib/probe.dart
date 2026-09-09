@@ -27,7 +27,7 @@ typedef _FreeStringDart = void Function(Pointer<Utf8>);
 /// `cadence_free_string` releases the answer. The `ok` payload's `fields`
 /// already speak [MediaMetadata]'s JSON names, so mapping is mostly a
 /// matter of listening: fields in, raw tags into `extra`, artwork
-/// base64-decoded, fingerprints into the hashes map.
+/// base64-decoded. Legacy fingerprint fields are ignored.
 ///
 /// Everything about loading lives in this one file, so a future move to
 /// Dart build hooks stays a one-file change.
@@ -201,14 +201,7 @@ class ProbeExtractor implements MetadataExtractor {
           ),
     ];
 
-    return ExtractionResult(
-      metadata: metadata,
-      artwork: artwork,
-      hashes: {
-        if (ok['phash64'] case final String hash) HashKind.perceptual: hash,
-        if (ok['simhash64'] case final String hash) HashKind.textSimhash: hash,
-      },
-    );
+    return ExtractionResult(metadata: metadata, artwork: artwork);
   }
 
   ArtworkRole _role(Object? name) => switch (name) {

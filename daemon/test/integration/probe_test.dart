@@ -8,7 +8,6 @@ import 'dart:isolate';
 import 'package:cadence_media/src/database/database.dart';
 import 'package:cadence_media/src/extract/audio_extractor.dart';
 import 'package:cadence_media/src/extract/extractor.dart';
-import 'package:cadence_media/src/extract/phash.dart';
 import 'package:cadenced/probe.dart';
 import 'package:cadence_media/src/kinds.dart';
 import 'package:cadence_media/src/metadata.dart';
@@ -22,7 +21,7 @@ import '../../../packages/media/test/fixtures.dart';
 /// cargo is around (cargo caches, so reruns are cheap), loaded through
 /// [ProbeExtractor.tryLoad], and pointed at real fixtures. Every
 /// assertion reads the mapped [ExtractionResult] — typed fields, raw
-/// `extra`, artwork bytes, fingerprint hashes — never the raw JSON.
+/// `extra`, artwork bytes — never the raw JSON.
 ///
 /// Without a library and without cargo, every test skips aloud.
 void main() => withMediaFileSystem(const LocalFileSystem(), registerTests);
@@ -150,17 +149,16 @@ void registerTests() {
   });
 
   group('info.pdf', () {
-    probeTest('reads the Info dict and hashes the text', (probe) async {
+    probeTest('reads the Info dict without calculating fingerprints', (
+      probe,
+    ) async {
       final result = await probe.extract(Fixtures.infoPdf, MediaKind.document);
       final metadata = result!.metadata as DocumentMetadata;
 
       expect(metadata.title, 'Fixture Document');
       expect(metadata.author, 'Cadence Fixtures');
       expect(metadata.pageCount, 1);
-      expect(
-        result.hashes[HashKind.textSimhash],
-        matches(RegExp(r'^[0-9a-f]{16}$')),
-      );
+      expect(result.hashes, isEmpty);
     });
   });
 
@@ -175,10 +173,7 @@ void registerTests() {
       expect(metadata.language, 'en');
       expect(metadata.publisher, 'Fixture Press');
       expect(metadata.isbn, isNotNull);
-      expect(
-        result.hashes[HashKind.textSimhash],
-        matches(RegExp(r'^[0-9a-f]{16}$')),
-      );
+      expect(result.hashes, isEmpty);
     });
   });
 
@@ -209,31 +204,6 @@ void registerTests() {
       );
       expect(result, isNull);
     });
-  });
-
-  group('cross-tier pHash', () {
-    // The probe reimplements phash.dart's pinned layout by hand; only
-    // decoder differences may separate the two, and those wiggle a few
-    // bits at most. A layout mismatch scores ~32 and fails loudly.
-    for (final (name, path) in [
-      ('jpg', Fixtures.exifJpg),
-      ('png', Fixtures.tinyPng),
-    ]) {
-      probeTest('agrees with the Dart tier on the $name fixture', (
-        probe,
-      ) async {
-        final dartHash = perceptualHash(File(path).readAsBytesSync());
-        expect(dartHash, isNotNull, reason: 'Dart tier must decode $name');
-        final result = await probe.extract(path, MediaKind.image);
-        final probeHash = result!.hashes[HashKind.perceptual];
-        expect(probeHash, matches(RegExp(r'^[0-9a-f]{16}$')));
-        expect(
-          hammingDistance(dartHash!, probeHash!),
-          lessThanOrEqualTo(10),
-          reason: 'dart=$dartHash probe=$probeHash — the bit layout drifted',
-        );
-      });
-    }
   });
 
   probeTest('virtual filesystem capability is rejected before native access', (
@@ -380,10 +350,7 @@ void registerTests() {
       expect(metadata.gpsLongitude, closeTo(-0.1246, 0.0001));
       expect(metadata.width, 8);
       expect(metadata.height, 8);
-      expect(
-        result.hashes[HashKind.perceptual],
-        matches(RegExp(r'^[0-9a-f]{16}$')),
-      );
+      expect(result.hashes, isEmpty);
     });
   });
 }

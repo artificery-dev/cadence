@@ -1,8 +1,6 @@
 //! The video probe: MP4 structure through re_mp4 with lofty reading the
 //! ilst, Matroska through the matroska crate, AVI through a short RIFF
-//! walk. Attachments and cover atoms come out as artwork, and the first
-//! decodable cover lends the file its perceptual hash — the deferred
-//! keyframe hash's stand-in.
+//! walk. Attachments and cover atoms come out as artwork.
 
 use std::fs::File;
 use std::io::BufReader;
@@ -12,7 +10,7 @@ use lofty::config::ParseOptions;
 use lofty::file::AudioFile;
 use matroska::{Settings, TagValue, Tracktype};
 
-use crate::image_probe::{entry_value_json, phash_bytes};
+use crate::image_probe::entry_value_json;
 use crate::report::Report;
 use crate::tagmap;
 use crate::{ProbeError, Result};
@@ -24,11 +22,6 @@ pub fn probe(path: &Path, ext: &str) -> Result<Report> {
         "mkv" | "webm" => mkv(path, &mut r, ext)?,
         "avi" => crate::avi::probe(path, &mut r)?,
         _ => return Err(ProbeError::unsupported(ext)),
-    }
-    if r.phash64.is_none() {
-        if let Some(cover) = r.artwork().first() {
-            r.phash64 = phash_bytes(&cover.bytes);
-        }
     }
     Ok(r)
 }

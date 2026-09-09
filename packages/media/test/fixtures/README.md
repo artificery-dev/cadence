@@ -56,7 +56,7 @@ orientation 1, DateTimeOriginal `2020:05:17 10:30:00`, GPS 51.5007N
 | --- | --- |
 | `info.pdf` | Hand-written single-page PDF; Info dict with Title "Fixture Document", Author "Cadence Fixtures", CreationDate |
 | `book.epub` | EPUB 2: title "The Fixture Book", creator, language, publisher, ISBN identifier, description, one XHTML chapter |
-| `notes.txt` | Plain prose — title comes from the filename, simhash from the words |
+| `notes.txt` | Plain prose — title comes from the filename |
 
 ## sidecar/
 

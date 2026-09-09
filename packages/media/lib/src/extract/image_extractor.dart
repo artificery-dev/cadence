@@ -13,7 +13,6 @@ import '../kinds.dart';
 import '../metadata.dart';
 import 'extractor.dart';
 import 'format.dart';
-import 'phash.dart';
 
 /// The pure-Dart image tier.
 ///
@@ -72,9 +71,6 @@ class ImageExtractor implements MetadataExtractor {
     return ExtractionResult(
       metadata: _metadata(exif, dimensions),
       artwork: [?thumbnail],
-      hashes: {
-        if (decoded != null) HashKind.perceptual: perceptualHashOf(decoded),
-      },
     );
   }
 

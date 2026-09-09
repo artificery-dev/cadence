@@ -555,14 +555,6 @@ void _treeSuite(
           if (p.basename(item.path) == name) item,
     ].single;
 
-    String? hash(String name, HashKind kind) {
-      final rows = [
-        for (final row in hashRows)
-          if (row.fileId == file(name).id && row.kind == kind) row,
-      ];
-      return rows.isEmpty ? null : rows.single.value;
-    }
-
     int art(String name, ArtworkRole role) => [
       for (final row in artRows)
         if (row.fileId == file(name).id && row.role == role) row,
@@ -925,7 +917,7 @@ void _treeSuite(
       );
     });
 
-    test('fingerprints: sha256 everywhere, the rest where they belong', () {
+    test('full SHA-256 identities without content fingerprints', () {
       for (final row in fileRows) {
         final sha = [
           for (final hash in hashRows)
@@ -935,46 +927,7 @@ void _treeSuite(
         expect(sha.single.value, matches(RegExp(r'^[0-9a-f]{64}$')));
       }
 
-      // pHash on every image the Dart tier can decode; the TIFF's comes
-      // only from the probe (package:image balks at its packbits data).
-      for (final name in const [
-        'exif.jpg',
-        'tiny.png',
-        'tiny.gif',
-        'tiny.webp',
-        'tiny.bmp',
-      ]) {
-        expect(
-          hash(name, HashKind.perceptual),
-          matches(RegExp(r'^[0-9a-f]{16}$')),
-          reason: name,
-        );
-      }
-      expect(
-        hash('tiny.tiff', HashKind.perceptual),
-        probeInPlay() ? matches(RegExp(r'^[0-9a-f]{16}$')) : isNull,
-        reason: 'the tiff pHash is the probe\'s alone',
-      );
-
-      // No pHash where no picture is: audio, video, documents.
-      expect(hash('01 Sine of the Times.mp3', HashKind.perceptual), isNull);
-      expect(hash('Fixture Show S01E02.mkv', HashKind.perceptual), isNull);
-
-      // SimHash on the texts the Dart tier can read; the PDF's text only
-      // yields to the probe.
-      expect(
-        hash('book.epub', HashKind.textSimhash),
-        matches(RegExp(r'^[0-9a-f]{16}$')),
-      );
-      expect(
-        hash('notes.txt', HashKind.textSimhash),
-        matches(RegExp(r'^[0-9a-f]{16}$')),
-      );
-      expect(
-        hash('info.pdf', HashKind.textSimhash),
-        probeInPlay() ? matches(RegExp(r'^[0-9a-f]{16}$')) : isNull,
-      );
-      expect(hash('chapters.m4b', HashKind.textSimhash), isNull);
+      expect(hashRows.every((hash) => hash.kind == HashKind.sha256), isTrue);
     });
 
     test('a second pass over unchanged ground changes nothing', () async {

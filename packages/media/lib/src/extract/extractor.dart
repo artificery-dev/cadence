@@ -17,8 +17,8 @@ class ExtractionResult {
   final MediaMetadata metadata;
   final List<ExtractedArtwork> artwork;
 
-  /// Content-derived fingerprints a tier computed along the way — the
-  /// image pHash, the document SimHash. The scanner adds sha256 itself.
+  /// Reserved for future content fingerprints. Built-in tiers leave this empty;
+  /// the scanner computes the full file identity separately.
   final Map<HashKind, String> hashes;
 }
 

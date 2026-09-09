@@ -2,9 +2,8 @@
 //!
 //! Dart hands over a path; this crate hands back JSON — typed fields
 //! under the `MediaMetadata` names, every raw tag preserved in `extra`,
-//! artwork as base64, and the content fingerprints (pHash, SimHash) it
-//! could compute along the way. Malformed media WILL find panics in a
-//! stack this deep, so every entry point is wrapped in `catch_unwind`:
+//! artwork as base64, without computing content fingerprints. Malformed media
+//! can find panics in this stack, so every entry point is wrapped in `catch_unwind`:
 //! the worst a bad file can do is an `err` envelope. No globals live
 //! here; several Dart worker isolates call in at once.
 //!
@@ -18,7 +17,6 @@ mod avi;
 mod document;
 mod image_probe;
 mod report;
-mod simhash;
 mod tagmap;
 mod video;
 
@@ -194,11 +192,12 @@ mod tests {
     }
 
     #[test]
-    fn pdf_reads_info_and_hashes_text() {
+    fn pdf_reads_info_without_fingerprints() {
         let ok = ok_probe("doc/info.pdf");
         assert_eq!(ok["fields"]["title"], "Fixture Document");
         assert_eq!(ok["fields"]["pageCount"], 1);
-        assert!(ok["simhash64"].as_str().is_some());
+        assert!(ok.get("phash64").is_none());
+        assert!(ok.get("simhash64").is_none());
     }
 
     #[test]
@@ -206,7 +205,8 @@ mod tests {
         let ok = ok_probe("doc/book.epub");
         assert_eq!(ok["fields"]["title"], "The Fixture Book");
         assert!(ok["fields"]["authors"].as_array().is_some());
-        assert!(ok["simhash64"].as_str().is_some());
+        assert!(ok.get("phash64").is_none());
+        assert!(ok.get("simhash64").is_none());
     }
 
     #[test]
@@ -215,7 +215,8 @@ mod tests {
         assert_eq!(ok["fields"]["cameraMake"], "Cadence");
         assert_eq!(ok["fields"]["cameraModel"], "Fixture Cam 1000");
         assert!(ok["fields"]["gpsLatitude"].is_number());
-        assert!(ok["phash64"].as_str().is_some());
+        assert!(ok.get("phash64").is_none());
+        assert!(ok.get("simhash64").is_none());
     }
 
     #[test]
