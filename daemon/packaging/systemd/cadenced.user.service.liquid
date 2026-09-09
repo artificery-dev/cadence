@@ -1,0 +1,20 @@
+[Unit]
+Description=Cadence media library daemon
+
+[Service]
+Type=simple
+StateDirectory={{ name }}
+StateDirectoryMode=0700
+CacheDirectory={{ name }}
+CacheDirectoryMode=0700
+RuntimeDirectory={{ name }}
+RuntimeDirectoryMode=0700
+UMask=0077
+ExecStart={{ executable }} --database "%S/{{ name }}/library.sqlite" --cache "%C/{{ name }}" --socket "%t/{{ name }}/media.sock" --policy lean
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=60
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

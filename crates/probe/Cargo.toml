@@ -1,0 +1,25 @@
+[package]
+name = "cadence-probe"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[lib]
+name = "cadence_probe"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+lofty = "0.25"
+mp4ameta = "0.13"
+matroska = "0.30"
+re_mp4 = "0.5"
+riff = "2.0"
+nom-exif = "3.7"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp", "tiff"] }
+lopdf = "0.44"
+pdf-extract = "0.12"
+rbook = "0.7"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"

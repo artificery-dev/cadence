@@ -1,0 +1,6 @@
+Notes on the fixture corpus.
+
+Plain text is the humblest document format: no metadata, no structure, just
+words. An extractor meeting this file should take its title from the
+filename and its simhash from these very sentences, which exist so a test
+can reword them slightly and measure how little the hash moves.

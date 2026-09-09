@@ -1,0 +1,20 @@
+name: cadenced
+version: 1.0.0
+publish_to: none
+resolution: workspace
+environment:
+  sdk: ^3.12.2
+dependencies:
+  watcher: ^1.2.1
+  cadence_media:
+    path: ../packages/media
+  cadence_client:
+    path: ../packages/client
+  file: ^7.0.1
+  path: ^1.9.0
+  drift: ^2.34.0
+  crypto: ^3.0.7
+  ffi: ^2.1.0
+dev_dependencies:
+  sqlite3: ^3.3.0
+  test: ^1.25.0

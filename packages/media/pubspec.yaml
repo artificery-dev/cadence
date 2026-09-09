@@ -1,0 +1,37 @@
+name: cadence_media
+description: >-
+  Cadence's media foundation: typed libraries of items over files, namespaced
+  tags, and the SQLite (drift) schema and repositories behind them. Pure Dart —
+  the database connection is injected, so tools and tests bring their own.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.12.2
+resolution: workspace
+
+dependencies:
+  file: ^7.0.1
+  drift: ^2.34.0
+  # Extraction: the pure-Dart tier.
+  audio_metadata_reader: ^1.7.1
+  exif_reader: ^4.1.0
+  image_size_getter: ^2.4.1
+  image: ^4.9.2
+  iso_base_media: ^6.3.2
+  random_access_source: ^4.2.1
+  archive: ^4.0.0
+  dart_pdf_reader: ^2.2.0
+  epub_plus: ^5.1.0
+  xml: ^6.5.0
+  # Scanner plumbing.
+  crypto: ^3.0.7
+  mime: ^2.0.0
+  path: ^1.9.0
+
+dev_dependencies:
+  build_runner: ^2.4.0
+  drift_dev: ^2.34.0
+  lints: ^6.0.0
+  sqlite3: ^3.4.0
+  test: ^1.25.0
