@@ -11,14 +11,8 @@
 //! on anything else. See `daemon/lib/probe.dart` for
 //! the reader.
 
-mod asf;
-mod audio;
-mod avi;
-mod document;
-mod image_probe;
+mod codecs;
 mod report;
-mod tagmap;
-mod video;
 
 use std::ffi::{c_char, CStr, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -71,15 +65,7 @@ pub fn probe_path(path_str: &str) -> Value {
         .extension()
         .map(|e| e.to_string_lossy().to_ascii_lowercase())
         .unwrap_or_default();
-    let outcome = match ext.as_str() {
-        "mp3" | "flac" | "ogg" | "oga" | "opus" | "m4a" | "m4b" | "aac" | "wav" | "aiff"
-        | "aif" | "ape" | "wv" | "wma" | "mka" => audio::probe(path, &ext),
-        "mp4" | "m4v" | "mov" | "mkv" | "webm" | "avi" => video::probe(path, &ext),
-        "jpg" | "jpeg" | "png" | "gif" | "webp" | "bmp" | "tif" | "tiff" | "heic" | "heif"
-        | "avif" => image_probe::probe(path, &ext),
-        "pdf" | "epub" => document::probe(path, &ext),
-        _ => Err(ProbeError::unsupported(&ext)),
-    };
+    let outcome = codecs::probe(path, &ext);
     match outcome {
         Ok(report) => json!({ "ok": report.to_json() }),
         Err(error) => json!({ "err": { "code": error.code, "msg": error.msg } }),

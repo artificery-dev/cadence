@@ -10,9 +10,9 @@ use lofty::config::ParseOptions;
 use lofty::file::AudioFile;
 use matroska::{Settings, TagValue, Tracktype};
 
-use crate::image_probe::entry_value_json;
+use super::image_probe::entry_value_json;
 use crate::report::Report;
-use crate::tagmap;
+use super::tagmap;
 use crate::{ProbeError, Result};
 
 pub fn probe(path: &Path, ext: &str) -> Result<Report> {
@@ -20,7 +20,7 @@ pub fn probe(path: &Path, ext: &str) -> Result<Report> {
     match ext {
         "mp4" | "m4v" | "mov" => mp4(path, &mut r, ext)?,
         "mkv" | "webm" => mkv(path, &mut r, ext)?,
-        "avi" => crate::avi::probe(path, &mut r)?,
+        "avi" => super::avi::probe(path, &mut r)?,
         _ => return Err(ProbeError::unsupported(ext)),
     }
     Ok(r)
@@ -82,7 +82,7 @@ fn mp4(path: &Path, r: &mut Report, ext: &str) -> Result<()> {
             tagmap::map_ilst_video(r, ilst);
         }
     }
-    crate::audio::chapters(path, r);
+    super::audio::chapters(path, r);
     track_extras(path, r);
     r.set_str(
         "container",

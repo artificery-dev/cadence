@@ -10,7 +10,7 @@ use std::io::{BufReader, Read};
 use std::path::Path;
 
 use crate::report::Report;
-use crate::tagmap::apply_vorbis_key;
+use super::tagmap::apply_vorbis_key;
 use crate::{ProbeError, Result};
 
 const HEADER_OBJECT: [u8; 16] = [

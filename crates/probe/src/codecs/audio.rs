@@ -17,7 +17,7 @@ use lofty::ogg::OggPictureStorage;
 use lofty::properties::FileProperties;
 
 use crate::report::Report;
-use crate::tagmap;
+use super::tagmap;
 use crate::{ProbeError, Result};
 
 pub fn probe(path: &Path, ext: &str) -> Result<Report> {
@@ -33,8 +33,8 @@ pub fn probe(path: &Path, ext: &str) -> Result<Report> {
         "aiff" | "aif" => aiff(path, &mut r)?,
         "ape" => ape(path, &mut r)?,
         "wv" => wavpack(path, &mut r)?,
-        "mka" => crate::video::probe_mka_audio(path, &mut r)?,
-        "wma" => crate::asf::probe(path, &mut r)?,
+        "mka" => super::video::probe_mka_audio(path, &mut r)?,
+        "wma" => super::asf::probe(path, &mut r)?,
         _ => return Err(ProbeError::unsupported(ext)),
     }
     Ok(r)
