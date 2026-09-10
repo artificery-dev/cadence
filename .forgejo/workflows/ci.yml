@@ -1,0 +1,124 @@
+# Cadence CI: check the workspace, build cadenced for amd64, arm64 and armhf,
+# and package each as a bundle tarball and a Debian package.
+#
+# Every step runs inside the toolchain image from toolchain/Containerfile via
+# toolchain/run.sh, so the jobs need a runner that executes on a host with
+# podman (or docker, with CADENCE_CONTAINER_ENGINE=docker) rather than inside
+# a job container. The `native` label below is the one knob to change when
+# registering such a runner under a different name. The image is tagged by a
+# digest of toolchain/, so it is rebuilt only when that directory changes and
+# is otherwise reused from the host's image store.
+name: CI
+
+"on":
+  push:
+    branches: ['**']
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+env:
+  DEB_MAINTAINER: Chris Hendrickson <chris@artificery.dev>
+
+jobs:
+  check:
+    name: Analyze and test
+    runs-on: native
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: https://data.forgejo.org/actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Resolve locked dependencies
+        run: toolchain/run.sh dart pub get --enforce-lockfile
+      - name: Analyze and run every suite
+        run: toolchain/run.sh dart run tool/bin/cadence.dart check
+
+  build:
+    name: Build ${{ matrix.arch }}
+    runs-on: native
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64, armhf]
+    steps:
+      - name: Checkout
+        uses: https://data.forgejo.org/actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Determine package version
+        run: |
+          set -eu
+          base=$(sed -n 's/^version: *//p' daemon/pubspec.yaml)
+          case "$GITHUB_REF" in
+            refs/tags/v*)
+              version=${GITHUB_REF#refs/tags/v}
+              if [ "$version" != "$base" ]; then
+                echo "::error::Tag v$version does not match daemon/pubspec.yaml version $base"
+                exit 1
+              fi
+              ;;
+            *)
+              version="$base~git$(date -u +%Y%m%d).$(printf %.7s "$GITHUB_SHA")"
+              ;;
+          esac
+          echo "CADENCE_VERSION=$version" >> "$GITHUB_ENV"
+          echo "Packaging version $version"
+      - name: Resolve locked dependencies
+        run: toolchain/run.sh dart pub get --enforce-lockfile
+      - name: Build bundle
+        run: toolchain/run.sh dart run tool/bin/cadence.dart build --arch ${{ matrix.arch }}
+      - name: Verify architecture
+        run: toolchain/run.sh file build/cli/${{ matrix.arch }}/bundle/bin/cadenced build/cli/${{ matrix.arch }}/bundle/bin/cadencectl build/cli/${{ matrix.arch }}/bundle/lib/libsqlite3.so build/cli/${{ matrix.arch }}/bundle/lib/libcadence_probe.so
+      - name: Package bundle tarball
+        run: |
+          toolchain/run.sh dart run tool/bin/cadence.dart package bundle \
+            --bundle build/cli/${{ matrix.arch }}/bundle \
+            --arch ${{ matrix.arch }} \
+            --source-commit "$GITHUB_SHA" \
+            --dart-version "$(toolchain/run.sh dart --version 2>&1 | sed -n 's/^Dart SDK version: \([0-9.]*\).*/\1/p')" \
+            --output "build/dist/cadenced-${CADENCE_VERSION}-linux-${{ matrix.arch }}.tar.gz"
+      - name: Package Debian archive
+        run: |
+          toolchain/run.sh dart run tool/bin/cadence.dart package deb \
+            --bundle build/cli/${{ matrix.arch }}/bundle \
+            --arch ${{ matrix.arch }} \
+            --version "$CADENCE_VERSION" \
+            --maintainer "$DEB_MAINTAINER" \
+            --output build/dist
+          toolchain/run.sh dpkg-deb --info "build/dist/cadenced_${CADENCE_VERSION}_${{ matrix.arch }}.deb"
+      - name: Save packages
+        uses: https://data.forgejo.org/forgejo/upload-artifact@5d5d22a31266ced268874388b861e4b58bb5c2f3 # v4.3.1
+        with:
+          name: cadenced-${{ matrix.arch }}
+          path: |
+            build/dist/*.tar.gz
+            build/dist/*.deb
+          retention-days: 30
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: [check, build]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: native
+    timeout-minutes: 15
+    steps:
+      - name: Collect packages
+        uses: https://data.forgejo.org/forgejo/download-artifact@1314311ddb542af343a82d478ac786ceada4143a # v5
+        with:
+          pattern: cadenced-*
+          path: release
+          merge-multiple: true
+      - name: Create release with packages attached
+        uses: https://data.forgejo.org/actions/forgejo-release@98265452477dafb3f0f27ba9c462c90b18cb44fd # v2.13.4
+        with:
+          direction: upload
+          url: ${{ github.server_url }}
+          repo: ${{ github.repository }}
+          tag: ${{ github.ref_name }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          release-dir: release
+          release-notes: cadenced ${{ github.ref_name }} for amd64, arm64 and armhf, as bundle tarballs and Debian packages.

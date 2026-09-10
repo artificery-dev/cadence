@@ -11,8 +11,8 @@ CacheDirectoryMode=0700
 RuntimeDirectory={{ name }}
 RuntimeDirectoryMode=0700
 UMask=0077
-{% if volume != "" %}ExecStart={{ executable }} --volume {{ volume }} --socket "%t/{{ name }}/media.sock" --policy lean
-{% else %}ExecStart={{ executable }} --database "%S/{{ name }}/library.sqlite" --cache "%C/{{ name }}" --socket "%t/{{ name }}/media.sock" --policy lean{% if availability == "host" %} --availability host{% endif %}
+{% if volume != "" %}ExecStart={{ executable }} --volume {{ volume }} --socket "%t/{{ name }}/media.sock" --policy lean{% if native == "true" %} --native true{% endif %}
+{% else %}ExecStart={{ executable }} --database "%S/{{ name }}/library.sqlite" --cache "%C/{{ name }}" --socket "%t/{{ name }}/media.sock" --policy lean{% if availability == "host" %} --availability host{% endif %}{% if native == "true" %} --native true{% endif %}
 {% endif %}Restart=on-failure
 RestartSec=3
 TimeoutStopSec=60

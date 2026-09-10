@@ -4,6 +4,7 @@ import 'package:cadence_client/cadence_client.dart';
 import 'package:cadence_client/unix.dart';
 import 'package:cadence_media/cadence_media.dart';
 import 'package:cadenced/host.dart';
+import 'package:cadenced/local_owner.dart';
 import 'package:cadenced/server.dart';
 import 'package:drift/native.dart';
 import 'package:file/memory.dart';
@@ -18,6 +19,9 @@ void main() {
       final directory = io.Directory.systemTemp.createTempSync(
         'cadence-events-',
       );
+      // Dart's temp directories follow the umask, and the server refuses a
+      // socket parent that is not 0700.
+      LocalOwner.chmod(directory.path, 448);
       final fs = MemoryFileSystem.test();
       fs.file('/music/a.mp3')
         ..createSync(recursive: true)

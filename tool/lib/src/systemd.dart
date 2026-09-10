@@ -24,6 +24,7 @@ Future<void> renderSystemd(
   String? group,
   String? volume,
   String availability = 'filesystem',
+  bool native = false,
 }) async {
   if (!['filesystem', 'host'].contains(availability) ||
       volume != null && availability == 'host') {
@@ -61,6 +62,7 @@ Future<void> renderSystemd(
       'name': name,
       'volume': volume == null ? '' : systemdExecutable(volume),
       'availability': availability,
+      'native': native ? 'true' : 'false',
       'service_user': user ?? '',
       'service_group': group ?? '',
     },

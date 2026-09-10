@@ -9,6 +9,24 @@ import 'package:cadenced/volume.dart';
 import 'package:test/test.dart';
 import '../core/volume_test.dart' show settle;
 
+/// Whether this host lets an unprivileged process open a private user and
+/// mount namespace; containers and hardened kernels often refuse, and the
+/// suite then skips aloud instead of failing on the launcher.
+bool namespacesAvailable() {
+  if (!Platform.isLinux) return false;
+  try {
+    return Process.runSync('unshare', [
+          '--user',
+          '--map-root-user',
+          '--mount',
+          'true',
+        ]).exitCode ==
+        0;
+  } catch (_) {
+    return false;
+  }
+}
+
 void main() {
   if (Platform.environment['CADENCE_MOUNT_TEST'] != '1') {
     test(
@@ -36,7 +54,9 @@ void main() {
         );
       },
       timeout: const Timeout(Duration(minutes: 2)),
-      skip: !Platform.isLinux,
+      skip: namespacesAvailable()
+          ? false
+          : 'unshare cannot open a private user/mount namespace here',
     );
     return;
   }
@@ -111,7 +131,9 @@ void main() {
           ).copySync('${home.path}/Music/song.flac');
         }
         final root = portable ? mount.path : home.path;
-        final socket = '${temp.path}/$mode.sock';
+        // The server creates a missing parent as 0700; the temp root itself
+        // follows the umask and would be refused.
+        final socket = '${temp.path}/run/$mode.sock';
         final executable = Platform.environment['CADENCE_VOLUME_EXECUTABLE'];
         final process = await Process.start(
           executable ?? Platform.resolvedExecutable,
@@ -147,7 +169,10 @@ void main() {
               if (line.contains('"event":"ready"') && !ready.isCompleted)
                 ready.complete();
             });
-        await ready.future.timeout(const Duration(seconds: 60));
+        await ready.future.timeout(
+          const Duration(seconds: 60),
+          onTimeout: () => fail('cadenced did not report ready:\n$output'),
+        );
         final client = CadenceClient(UnixMediaTransport(socket));
         final status = await client.volume();
         expect(status['state'], 'attached', reason: '$output');

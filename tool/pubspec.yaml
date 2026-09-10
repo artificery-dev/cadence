@@ -9,6 +9,7 @@ dependencies:
   path: ^1.9.0
   liquify: ^1.6.1
   archive: ^4.0.0
+  crypto: ^3.0.7
   cadence_client:
     path: ../packages/client
 dev_dependencies:
