@@ -1,6 +1,7 @@
 import 'dart:ffi';
 import 'dart:io';
 import 'package:ffi/ffi.dart';
+import 'linux_flags.dart';
 
 /// Linux advisory flock, held across the entire SQLite connection lifetime.
 /// Locks the database inode itself, so symlink and hard-link aliases share ownership.
@@ -9,7 +10,7 @@ class LocalOwner {
   LocalOwner._(this.fd, this.path);
   final int fd;
   final String path;
-  static final _libc = DynamicLibrary.open('libc.so.6');
+  static final _libc = DynamicLibrary.process();
   static final _open = _libc
       .lookupFunction<
         Int32 Function(Pointer<Utf8>, Int32, Uint32),
@@ -45,7 +46,7 @@ class LocalOwner {
     final ptr = canonical.toNativeUtf8();
     final int fd;
     try {
-      fd = _open(ptr, 2 | 64 | 131072 | 524288, 384);
+      fd = _open(ptr, LinuxOpenFlags.current.writable(createFile: true), 384);
     } finally {
       malloc.free(ptr);
     }

@@ -5,6 +5,7 @@ import 'package:file/file.dart';
 import 'package:file/local.dart';
 import 'package:file/chroot.dart';
 import 'volume.dart';
+import 'linux_flags.dart';
 import 'package:cadence_media/src/filesystem.dart' show LocalMediaFiles;
 
 /// Linux mount lease. Directory descriptors pin the actual mount even after a
@@ -23,7 +24,7 @@ class LinuxVolumeAttachment implements VolumeAttachment, LocalPlaybackVolume {
   bool _released = false;
   @override
   final FileSystem fileSystem;
-  static final _libc = DynamicLibrary.open('libc.so.6');
+  static final _libc = DynamicLibrary.process();
   static final _open = _libc
       .lookupFunction<
         Int32 Function(Pointer<Utf8>, Int32, Uint32),
@@ -49,8 +50,7 @@ class LinuxVolumeAttachment implements VolumeAttachment, LocalPlaybackVolume {
       .lookupFunction<Int32 Function(Int32, Int32), int Function(int, int)>(
         'flock',
       );
-  static const _directory =
-      65536 | 131072 | 524288; // DIRECTORY|NOFOLLOW|CLOEXEC
+  static int get _directory => LinuxOpenFlags.current.directoryRead;
   static T _string<T>(String value, T Function(Pointer<Utf8>) action) {
     final ptr = value.toNativeUtf8();
     try {
@@ -99,7 +99,7 @@ class LinuxVolumeAttachment implements VolumeAttachment, LocalPlaybackVolume {
         (p) => _openat(
           metadata,
           p,
-          2 | (initialize ? 64 : 0) | 131072 | 524288,
+          LinuxOpenFlags.current.writable(createFile: initialize),
           384,
         ),
       );
