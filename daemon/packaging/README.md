@@ -33,6 +33,11 @@ and points them at it through `CADENCE_VOLUME_EXECUTABLE`, so the daemons
 those suites spawn are compiled rather than JIT-run; without that, readiness
 and job timeouts tripped on loaded runners.
 
+The desktop app in `app/` is packaged by `cadence app build`, which runs
+`flutter build linux` and copies a `cadence build` bundle to `daemon/`
+beside the app's executable; the app installs that copy as the user's
+`cadenced.service` when asked to run in the background (see `app/README.md`).
+
 ## Bundle
 
 `build` leaves a `dart build cli` bundle at `build/cli/<arch>/bundle`:
@@ -70,8 +75,9 @@ with `dpkg-deb --root-owner-group`. The package:
 The toolchain image is Debian bookworm so cross-linked binaries need nothing
 newer than glibc 2.36, which bookworm-based targets provide.
 
-Versions follow `daemon/pubspec.yaml`. CI packages a tag `vX.Y.Z` as `X.Y.Z`
-and fails if the tag and pubspec disagree; every other build is
+Versions follow `daemon/pubspec.yaml`, and `app/pubspec.yaml` must carry the
+same number. CI packages a tag `vX.Y.Z` as `X.Y.Z` and fails if the tag and
+pubspecs disagree; every other build is
 `X.Y.Z~git<date>.<sha>`, which sorts before the release.
 
 ## Continuous integration
@@ -83,6 +89,17 @@ on it goes through to a disposable prerelease at the moving tag `ci-test`.
 The check job runs `cadence check --no-integration` in CI for now; the daemon
 integration suites spawn real daemons and mounts and have not been reliable
 on the shared runners, so run the full `cadence check` locally.
+
+The desktop app's own Debian package comes from `cadence package app-deb`
+(see `app/README.md`); it recommends this one rather than bundling a daemon.
+
+The `app` job runs after `check` in the same image — which carries the
+pinned stable Flutter SDK and the Linux desktop build dependencies (GTK,
+clang/cmake/ninja, libmpv, epoxy) for it — and runs `cadence app check` and
+`cadence app build`, then saves the app bundle tarball (with `cadenced`
+inside) and the app's Debian package as the `cadence-app-amd64` artifact;
+releases attach them beside the daemon packages. Pushes to `develop` and
+`main` run every job but publish nothing.
 
 The jobs run on the `linux-amd64-container` runners,
 which execute every job inside a container with no docker socket and no

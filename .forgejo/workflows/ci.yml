@@ -1,5 +1,6 @@
-# Cadence CI: check the workspace, build cadenced for amd64, arm64 and armhf,
-# and package each as a bundle tarball and a Debian package.
+# Cadence CI: check the workspace, build cadenced for amd64, arm64 and armhf
+# and package each as a bundle tarball and a Debian package, and check and
+# build the Flutter desktop app for Linux amd64 with cadenced bundled.
 #
 # The runners are container-only (no docker socket, unprivileged), so every
 # job runs inside an image. The check and build jobs run inside the toolchain
@@ -25,16 +26,17 @@
 # Alternatively the CI_FORGEJO_REGISTRY_USERNAME / CI_FORGEJO_REGISTRY_TOKEN
 # secrets (an access token with package scope) take precedence when set.
 #
-# The `ci` branch exists to exercise this file without touching main (main
+# Pushes to `develop` and `main` check and build everything without
+# publishing. The `ci` branch exists to exercise this file end to end (main
 # is mirrored publicly): every run on it, push or dispatch, goes all the way
 # through to a disposable prerelease tagged `ci-test`, replaced each time.
 # Real releases come from `v*` tags, whose version must match
-# daemon/pubspec.yaml.
+# daemon/pubspec.yaml and app/pubspec.yaml, which move together.
 name: CI
 
 "on":
   push:
-    branches: [main, ci]
+    branches: [main, develop, ci]
     tags: ['v*']
   pull_request:
   workflow_dispatch:
@@ -250,9 +252,79 @@ jobs:
           retention-days: 30
           if-no-files-found: error
 
+  app:
+    name: Check and build the desktop app
+    # Beside the daemon builds, after check: the Flutter build is the
+    # heaviest job here and the amd64 runners share one host.
+    needs: [toolchain, toolchain-build, check]
+    if: >-
+      always() && needs.toolchain.result == 'success'
+      && (needs.toolchain-build.result == 'success' || needs.toolchain-build.result == 'skipped')
+      && needs.check.result == 'success'
+    runs-on: linux-amd64-container
+    timeout-minutes: 60
+    container:
+      image: ${{ needs.toolchain.outputs.image }}
+      credentials:
+        username: ${{ secrets.CI_FORGEJO_REGISTRY_USERNAME || github.actor }}
+        password: ${{ secrets.CI_FORGEJO_REGISTRY_TOKEN || secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: https://data.forgejo.org/actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Resolve locked dependencies
+        run: dart pub get --enforce-lockfile
+      - name: Determine package version
+        run: |
+          set -eu
+          base=$(sed -n 's/^version: *//p' daemon/pubspec.yaml)
+          app=$(sed -n 's/^version: *//p' app/pubspec.yaml | sed 's/+.*//')
+          if [ "$app" != "$base" ]; then
+            echo "::error::app/pubspec.yaml version $app does not match daemon/pubspec.yaml version $base"
+            exit 1
+          fi
+          case "$GITHUB_REF" in
+            refs/tags/v*)
+              version=${GITHUB_REF#refs/tags/v}
+              if [ "$version" != "$base" ]; then
+                echo "::error::Tag v$version does not match version $base"
+                exit 1
+              fi
+              ;;
+            *) version="$base~git$(date -u +%Y%m%d).$(printf %.7s "$GITHUB_SHA")" ;;
+          esac
+          echo "CADENCE_VERSION=$version" >> "$GITHUB_ENV"
+          echo "Packaging version $version"
+      - name: Analyze and test the app
+        run: cadence app check
+      - name: Build the app with cadenced bundled
+        run: cadence app build
+      - name: Archive the app bundle
+        run: |
+          mkdir -p build/dist
+          tar -C app/build/linux/x64/release -czf "build/dist/cadence-${CADENCE_VERSION}-linux-amd64.tar.gz" --transform 's,^bundle,cadence,' bundle
+      - name: Package Debian archive
+        run: |
+          cadence package app-deb \
+            --bundle app/build/linux/x64/release/bundle \
+            --version "$CADENCE_VERSION" \
+            --maintainer "$DEB_MAINTAINER" \
+            --output build/dist
+          dpkg-deb --info "build/dist/cadence_${CADENCE_VERSION}_amd64.deb"
+      - name: Save the app packages
+        uses: https://code.forgejo.org/forgejo/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4 (Forgejo-patched; numbered tags are unpatched mirrors)
+        with:
+          name: cadence-app-amd64
+          path: |
+            build/dist/cadence-*.tar.gz
+            build/dist/cadence_*.deb
+          retention-days: 30
+          if-no-files-found: error
+
   release:
     name: Publish release
-    needs: [check, build]
+    needs: [check, build, app]
     if: >-
       (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
       || github.ref == 'refs/heads/ci' 
@@ -267,7 +339,7 @@ jobs:
       - name: Collect packages
         uses: https://code.forgejo.org/forgejo/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4 (Forgejo-patched)
         with:
-          pattern: cadenced-*
+          pattern: cadence*-*
           path: release
           merge-multiple: true
       - name: Create release with packages attached
@@ -282,4 +354,4 @@ jobs:
           override: ${{ env.PRERELEASE }}
           token: ${{ secrets.GITHUB_TOKEN }}
           release-dir: release
-          release-notes: cadenced ${{ env.RELEASE_TAG }} (${{ github.sha }}) for amd64, arm64 and armhf, as bundle tarballs and Debian packages.
+          release-notes: cadenced ${{ env.RELEASE_TAG }} (${{ github.sha }}) for amd64, arm64 and armhf, as bundle tarballs and Debian packages, and the Cadence desktop app for Linux amd64 as a bundle tarball (cadenced inside) and a Debian package (which recommends cadenced).

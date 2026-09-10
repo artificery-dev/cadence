@@ -15,14 +15,19 @@ const debianInstallRoot = 'usr/lib/cadenced';
 /// The newest glibc symbol version any ELF file in [bundle] binds to, as
 /// `2.NN`, so the package declares the `libc6` floor it truly needs instead
 /// of guessing from the build host.
-Future<String> glibcFloor(ToolContext context, String bundle) async {
+Future<String> glibcFloor(ToolContext context, String bundle) =>
+    glibcFloorOf(context, [
+      for (final relative in verifyBundle(context, bundle))
+        bundlePath(context, bundle, relative),
+    ]);
+
+/// The glibc floor over any set of files; non-ELF files are skipped.
+Future<String> glibcFloorOf(ToolContext context, Iterable<String> paths) async {
   final fs = context.fileSystem;
   var floor = 0;
   final pattern = RegExp(r'GLIBC_2\.(\d+)');
-  for (final relative in verifyBundle(context, bundle)) {
-    final bytes = fs
-        .file(bundlePath(context, bundle, relative))
-        .readAsBytesSync();
+  for (final path in paths) {
+    final bytes = fs.file(path).readAsBytesSync();
     if (bytes.length < 4 ||
         bytes[0] != 0x7f ||
         bytes[1] != 0x45 ||

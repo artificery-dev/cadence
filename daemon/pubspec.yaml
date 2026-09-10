@@ -1,5 +1,5 @@
 name: cadenced
-version: 0.9.0
+version: 0.9.1
 publish_to: none
 resolution: workspace
 environment:

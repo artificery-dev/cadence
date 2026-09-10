@@ -3,6 +3,7 @@ import 'package:archive/archive.dart';
 import 'package:crypto/crypto.dart';
 import 'package:args/command_runner.dart';
 import 'package:cadence_tool/cli.dart';
+import 'package:cadence_tool/src/app_debian.dart';
 import 'package:cadence_tool/src/fixtures.dart';
 import 'package:file/memory.dart';
 import 'package:test/test.dart';
@@ -74,6 +75,181 @@ void main() {
           ..writeAsStringSync('sqlite');
       }
     }
+
+    test('app build ships the daemon bundle beside the app ($style)', () async {
+      fs.file(context.at('LICENSE')).writeAsStringSync('MIT');
+      processes.onRun = (executable, args) {
+        fakeBuildOutputs(executable, args);
+        if (executable == 'flutter-test' && args.first == 'build') {
+          fs.file(context.at('app/build/linux/x64/release/bundle/cadence'))
+            ..createSync(recursive: true)
+            ..writeAsStringSync('app');
+        }
+      };
+      await cli.run(['app', 'build', '--flutter', 'flutter-test']);
+      final flutterCalls = processes.calls.where((c) => c.$1 == 'flutter-test');
+      expect(flutterCalls.last.$2, ['build', 'linux', '--release']);
+      expect(flutterCalls.last.$3, context.at('app'));
+      // The daemon was built first, then copied in.
+      expect(processes.calls.first.$1, 'cargo');
+      for (final relative in [
+        'daemon/bin/cadenced',
+        'daemon/bin/cadencectl',
+        'daemon/lib/libsqlite3.so',
+        'daemon/lib/libcadence_probe.so',
+      ]) {
+        expect(
+          fs
+              .file(
+                context.path.join(
+                  context.at('app/build/linux/x64/release/bundle'),
+                  context.path.joinAll(relative.split('/')),
+                ),
+              )
+              .existsSync(),
+          isTrue,
+          reason: relative,
+        );
+      }
+    });
+
+    test(
+      'app build takes a ready daemon bundle and skips building one ($style)',
+      () async {
+        final ready = context.at('elsewhere/bundle');
+        for (final relative in ['bin/cadenced', 'lib/libsqlite3.so']) {
+          fs.file(
+              context.path.join(
+                ready,
+                context.path.joinAll(relative.split('/')),
+              ),
+            )
+            ..createSync(recursive: true)
+            ..writeAsStringSync('x');
+        }
+        processes.onRun = (executable, args) {
+          if (executable == 'flutter') {
+            fs.file(context.at('app/build/linux/x64/debug/bundle/cadence'))
+              ..createSync(recursive: true)
+              ..writeAsStringSync('app');
+          }
+        };
+        await cli.run(['app', 'build', '--debug', '--daemon-bundle', ready]);
+        expect(processes.calls.map((c) => c.$1), ['flutter', 'flutter']);
+        expect(processes.calls.first.$2, ['pub', 'get']);
+        expect(processes.calls.last.$2, ['build', 'linux', '--debug']);
+        expect(
+          fs
+              .file(
+                context.at(
+                  'app/build/linux/x64/debug/bundle/daemon/bin/cadenced',
+                ),
+              )
+              .existsSync(),
+          isTrue,
+        );
+      },
+    );
+
+    test('app check resolves, analyzes and tests in app/ ($style)', () async {
+      await cli.run(['app', 'check']);
+      expect(processes.calls.map((c) => c.$2.first), [
+        'pub',
+        'analyze',
+        'test',
+      ]);
+      expect(processes.calls.map((c) => c.$3).toSet(), {context.at('app')});
+    });
+
+    test('app-deb stages the app, desktop entry and icons ($style)', () async {
+      fs.file(context.at('LICENSE')).writeAsStringSync('MIT');
+      final bundle = context.at('app/build/linux/x64/release/bundle');
+      // A tiny ELF-looking executable binding GLIBC_2.34, a plugin
+      // library, assets, and a daemon/ that must be left out.
+      fs.file(context.path.join(bundle, 'cadence'))
+        ..createSync(recursive: true)
+        ..writeAsBytesSync([0x7f, 0x45, 0x4c, 0x46, ...'GLIBC_2.34'.codeUnits]);
+      fs.file(context.path.join(bundle, 'lib', 'libapp.so'))
+        ..createSync(recursive: true)
+        ..writeAsBytesSync([0x7f, 0x45, 0x4c, 0x46, ...'GLIBC_2.17'.codeUnits]);
+      fs.file(context.path.join(bundle, 'data', 'flutter_assets', 'x'))
+        ..createSync(recursive: true)
+        ..writeAsStringSync('asset');
+      fs.file(context.path.join(bundle, 'daemon', 'bin', 'cadenced'))
+        ..createSync(recursive: true)
+        ..writeAsStringSync('daemon');
+      final assets = context.at('assets/cadence/linux');
+      for (final relative in [
+        'dev.artificery.cadence.desktop',
+        'dev.artificery.cadence.metainfo.xml',
+        for (final size in hicolorSizes)
+          'hicolor/${size}x$size/apps/cadence.png',
+        'hicolor/scalable/apps/cadence.svg',
+        'hicolor/symbolic/apps/cadence-symbolic.svg',
+      ]) {
+        fs.file(
+            context.path.join(
+              assets,
+              context.path.joinAll(relative.split('/')),
+            ),
+          )
+          ..createSync(recursive: true)
+          ..writeAsStringSync(relative);
+      }
+      await cli.run([
+        'package',
+        'app-deb',
+        '--bundle',
+        bundle,
+        '--version',
+        '0.9.1',
+        '--maintainer',
+        'Me <me@example.com>',
+        '--output',
+        context.at('build/dist'),
+      ]);
+      final staging = context.at('build/deb/amd64/cadence_0.9.1_amd64');
+      String staged(String relative) =>
+          context.path.join(staging, context.path.joinAll(relative.split('/')));
+      for (final relative in [
+        'usr/lib/cadence/cadence',
+        'usr/lib/cadence/lib/libapp.so',
+        'usr/lib/cadence/data/flutter_assets/x',
+        'usr/share/applications/dev.artificery.cadence.desktop',
+        'usr/share/metainfo/dev.artificery.cadence.metainfo.xml',
+        'usr/share/icons/hicolor/48x48/apps/dev.artificery.cadence.png',
+        'usr/share/icons/hicolor/scalable/apps/dev.artificery.cadence.svg',
+        'usr/share/icons/hicolor/symbolic/apps/dev.artificery.cadence-symbolic.svg',
+        'usr/share/doc/cadence/copyright',
+        'DEBIAN/control',
+        'DEBIAN/md5sums',
+        'DEBIAN/postinst',
+      ]) {
+        expect(
+          fs.file(staged(relative)).existsSync(),
+          isTrue,
+          reason: relative,
+        );
+      }
+      expect(
+        fs.directory(staged('usr/lib/cadence/daemon')).existsSync(),
+        isFalse,
+      );
+      expect(
+        fs.link(staged('usr/bin/cadence')).targetSync(),
+        '../lib/cadence/cadence',
+      );
+      final control = fs.file(staged('DEBIAN/control')).readAsStringSync();
+      expect(control, contains('Package: cadence\n'));
+      expect(control, contains('Depends: libc6 (>= 2.34), '));
+      expect(control, contains('Recommends: cadenced'));
+      final dpkg = processes.calls.last;
+      expect(dpkg.$1, 'dpkg-deb');
+      expect(
+        dpkg.$2.last,
+        context.path.join(context.at('build/dist'), 'cadence_0.9.1_amd64.deb'),
+      );
+    });
 
     test('build keeps Rust and Dart outputs separate ($style)', () async {
       fs.file(context.at('LICENSE')).writeAsStringSync('MIT');

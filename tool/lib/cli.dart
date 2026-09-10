@@ -1,4 +1,6 @@
 import 'package:args/command_runner.dart';
+import 'src/app.dart';
+import 'src/app_debian.dart';
 import 'src/build.dart';
 import 'src/bundle.dart';
 import 'src/context.dart';
@@ -13,6 +15,7 @@ class CadenceTool extends CommandRunner<void> {
   CadenceTool(ToolContext context, {Future<void> Function(String?)? demo})
     : super('cadence', 'Cadence development commands.') {
     addCommand(_Build(context));
+    addCommand(_App(context));
     addCommand(_Native(context));
     addCommand(_Check(context));
     addCommand(_Package(context));
@@ -61,6 +64,62 @@ class _Build extends _Command {
     await buildBundle(
       context,
       target: arch == null ? null : LinuxTarget.parse(arch),
+      debug: argResults!['debug'] as bool,
+    );
+  }
+}
+
+class _App extends _Command {
+  _App(super.context) {
+    addSubcommand(_AppCheck(context));
+    addSubcommand(_AppBuild(context));
+  }
+  @override
+  String get name => 'app';
+  @override
+  String get description =>
+      'Check and build the Flutter desktop app in app/ (needs the Flutter SDK).';
+}
+
+class _AppCheck extends _Command {
+  _AppCheck(super.context) {
+    argParser.addOption('flutter', defaultsTo: 'flutter');
+  }
+  @override
+  String get name => 'check';
+  @override
+  String get description => 'Resolve, analyze and test the app.';
+  @override
+  Future<void> run() async {
+    noRest();
+    await checkApp(context, flutter: argResults!['flutter'] as String);
+  }
+}
+
+class _AppBuild extends _Command {
+  _AppBuild(super.context) {
+    argParser
+      ..addOption('flutter', defaultsTo: 'flutter')
+      ..addFlag('debug', negatable: false)
+      ..addOption(
+        'daemon-bundle',
+        help:
+            'A bundle from `cadence build` to ship inside the app; built '
+            'first when omitted.',
+      );
+  }
+  @override
+  String get name => 'build';
+  @override
+  String get description =>
+      'Build the Linux desktop app with cadenced bundled beside it.';
+  @override
+  Future<void> run() async {
+    noRest();
+    await buildApp(
+      context,
+      flutter: argResults!['flutter'] as String,
+      daemonBundle: argResults!['daemon-bundle'] as String?,
       debug: argResults!['debug'] as bool,
     );
   }
@@ -148,6 +207,7 @@ class _Package extends _Command {
     addSubcommand(_Systemd(context));
     addSubcommand(_Bundle(context));
     addSubcommand(_Deb(context));
+    addSubcommand(_AppDeb(context));
   }
   @override
   String get name => 'package';
@@ -283,6 +343,40 @@ class _Deb extends _Command {
       context,
       bundle: requiredOption('bundle'),
       target: LinuxTarget.parse(requiredOption('arch')),
+      version: requiredOption('version'),
+      maintainer: requiredOption('maintainer'),
+      output: requiredOption('output'),
+    );
+  }
+}
+
+class _AppDeb extends _Command {
+  _AppDeb(super.context) {
+    argParser
+      ..addOption(
+        'bundle',
+        mandatory: true,
+        help: 'The app bundle from `cadence app build` (flutter build linux).',
+      )
+      ..addOption('version', mandatory: true, help: 'Debian package version.')
+      ..addOption(
+        'maintainer',
+        mandatory: true,
+        help: 'Package maintainer as "Name <email>".',
+      )
+      ..addOption('output', mandatory: true, help: 'Directory for the .deb.');
+  }
+  @override
+  String get name => 'app-deb';
+  @override
+  String get description =>
+      'Build the desktop app Debian package (recommends cadenced) with dpkg-deb.';
+  @override
+  Future<void> run() async {
+    noRest();
+    await packageAppDebian(
+      context,
+      bundle: requiredOption('bundle'),
       version: requiredOption('version'),
       maintainer: requiredOption('maintainer'),
       output: requiredOption('output'),

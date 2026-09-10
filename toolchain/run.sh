@@ -48,6 +48,12 @@ fi
 pub_cache=${PUB_CACHE:-$HOME/.pub-cache}
 mkdir -p "$root/build/cargo" "$root/build/home" "$pub_cache"
 
+# The Flutter app's build tree and package resolution are per toolchain: a
+# CMake cache names the machine's own compilers and a package config names
+# its own SDK, so the container gets separate directories mounted over the
+# app's, and both it and the host keep their incremental builds.
+mkdir -p "$root/build/container/app-build" "$root/build/container/app-dart_tool"
+
 tty=
 if [ -t 0 ] && [ -t 1 ]; then tty=-t; fi
 
@@ -75,4 +81,6 @@ exec "$engine" run --rm -i $tty \
   -e "CARGO_HOME=$root/build/cargo" \
   -v "$pub_cache:$pub_cache" \
   -e "PUB_CACHE=$pub_cache" \
+  -v "$root/build/container/app-build:$root/app/build" \
+  -v "$root/build/container/app-dart_tool:$root/app/.dart_tool" \
   "$image" "$@"
