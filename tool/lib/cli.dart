@@ -12,6 +12,7 @@ class CadenceTool extends CommandRunner<void> {
     addCommand(_Check(context));
     addCommand(_Package(context));
     addCommand(_Fixtures(context));
+    addCommand(_VolumeDemo(context));
     if (demo != null) addCommand(_Demo(demo));
   }
 }
@@ -149,6 +150,11 @@ class _Systemd extends _Command {
       ..addOption('name', defaultsTo: 'cadence')
       ..addOption('service-user')
       ..addOption('service-group')
+      ..addOption(
+        'volume',
+        help:
+            'Existing portable-library mountpoint; initialization is a separate explicit step.',
+      )
       ..addOption('output', mandatory: true);
   }
   @override
@@ -167,6 +173,7 @@ class _Systemd extends _Command {
       name: argResults!['name'] as String,
       user: argResults!['service-user'] as String?,
       group: argResults!['service-group'] as String?,
+      volume: argResults!['volume'] as String?,
     );
   }
 }
@@ -218,5 +225,24 @@ class _Demo extends Command<void> {
     if (argResults!.rest.isNotEmpty)
       usageException('Unexpected positional arguments');
     return demo(argResults!['executable'] as String?);
+  }
+}
+
+class _VolumeDemo extends _Command {
+  _VolumeDemo(super.context);
+  @override
+  String get name => 'volume-demo';
+  @override
+  String get description =>
+      'Exercise a standalone portable library in an isolated Linux mount namespace.';
+  @override
+  Future<void> run() async {
+    noRest();
+    await context.run(context.dartExecutable, [
+      'test',
+      'test/integration/volume_linux_test.dart',
+      '--reporter',
+      'expanded',
+    ], directory: 'daemon');
   }
 }

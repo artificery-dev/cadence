@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'src/volume.dart';
+export 'src/volume.dart';
 
 /// Version 1 transports exchange JSON values; artwork has a separate byte path.
 abstract interface class MediaTransport {
@@ -29,6 +31,36 @@ class CadenceClient {
     String path, [
     Map<String, Object?>? body,
   ]) => transport.request(method, path, body);
+  Future<VolumeStatus> volumeStatus() async =>
+      VolumeStatus.fromJson(await volume());
+  Future<MediaLocation> resolveMedia({
+    required String libraryUuid,
+    required int itemId,
+    required String volumeId,
+    required String generation,
+  }) async => MediaLocation.fromJson(
+    await call('post', '/media/resolve', {
+      'libraryUuid': libraryUuid,
+      'itemId': itemId,
+      'volumeId': volumeId,
+      'generation': generation,
+    }),
+  );
+  Future<Map<String, Object?>> volume() => call('get', '/volume');
+  Future<Map<String, Object?>> attachVolume({
+    String? expectedId,
+    String? expectedGeneration,
+  }) => call('post', '/volume/attach', {
+    if (expectedId != null) 'expectedId': expectedId,
+    if (expectedGeneration != null) 'expectedGeneration': expectedGeneration,
+  });
+  Future<Map<String, Object?>> ejectVolume({
+    String? expectedId,
+    String? expectedGeneration,
+  }) => call('post', '/volume/eject', {
+    if (expectedId != null) 'expectedId': expectedId,
+    if (expectedGeneration != null) 'expectedGeneration': expectedGeneration,
+  });
   Future<Map<String, Object?>> snapshot() => call('get', '/snapshot');
   Future<int> createLibrary(String name, String type) async =>
       (await call('post', '/libraries', {'name': name, 'type': type}))['id']

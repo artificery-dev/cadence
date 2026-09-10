@@ -10,7 +10,8 @@ import 'package:cadence_media/src/database/database.dart';
 import 'package:cadence_media/src/kinds.dart';
 import 'package:cadence_media/src/metadata.dart';
 import 'package:cadence_media/src/extract/extractor.dart';
-import 'package:cadence_media/src/filesystem.dart' show mediaFileSystem;
+import 'package:cadence_media/src/filesystem.dart'
+    show mediaFileSystem, LocalMediaFiles;
 import 'package:file/local.dart';
 
 typedef _AbiVersionC = Uint32 Function();
@@ -144,11 +145,16 @@ class ProbeExtractor implements MetadataExtractor {
 
   @override
   Future<ExtractionResult?> extract(String path, MediaKind kind) async {
-    if (mediaFileSystem is! LocalFileSystem)
+    if (mediaFileSystem is! LocalFileSystem &&
+        mediaFileSystem is! LocalMediaFiles)
       throw UnsupportedError(
         'Native probe requires a local filesystem; virtual paths are never passed to native code',
       );
-    final pathPointer = path.toNativeUtf8();
+    final fs = mediaFileSystem;
+    final nativePath = fs is LocalMediaFiles
+        ? (fs as LocalMediaFiles).localMediaPath(path)
+        : path;
+    final pathPointer = nativePath.toNativeUtf8();
     final Pointer<Utf8> answer;
     try {
       answer = _probeFile(pathPointer);

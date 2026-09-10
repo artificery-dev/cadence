@@ -134,6 +134,8 @@ void registerTests() {
         [file],
       );
       await db.customStatement('DROP TABLE scan_work');
+      await db.customStatement('DROP TRIGGER library_identity_created');
+      await db.customStatement('DROP TABLE library_identities');
       await db.customStatement('PRAGMA user_version = 7');
       await db.close();
       db = MediaDatabase(
@@ -160,7 +162,7 @@ void registerTests() {
 
     test('lands on the current version', () async {
       final row = await db.customSelect('PRAGMA user_version').getSingle();
-      expect(row.read<int>('user_version'), 9);
+      expect(row.read<int>('user_version'), 10);
     });
 
     test('the audio library type grows up into music', () async {
@@ -264,7 +266,7 @@ void registerTests() {
           );
       expect(await db.select(db.libraryRoots).get(), hasLength(1));
       final row = await db.customSelect('PRAGMA user_version').getSingle();
-      expect(row.read<int>('user_version'), 9);
+      expect(row.read<int>('user_version'), 10);
     });
   });
 }

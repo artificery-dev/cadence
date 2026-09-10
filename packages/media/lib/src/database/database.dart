@@ -201,7 +201,22 @@ class MediaDatabase extends _$MediaDatabase {
   MediaDatabase(super.executor);
 
   @override
-  int get schemaVersion => 9;
+  int get schemaVersion => 10;
+
+  Future<void> _createLibraryIdentities() async {
+    await customStatement(
+      'CREATE TABLE library_identities ('
+      'library_id INTEGER PRIMARY KEY REFERENCES libraries(id) ON DELETE CASCADE, '
+      'uuid TEXT NOT NULL UNIQUE)',
+    );
+    await customStatement(
+      'INSERT INTO library_identities SELECT id, $_uuidSql FROM libraries',
+    );
+    await customStatement(
+      'CREATE TRIGGER library_identity_created AFTER INSERT ON libraries '
+      'BEGIN INSERT INTO library_identities VALUES (NEW.id, $_uuidSql); END',
+    );
+  }
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -269,10 +284,12 @@ class MediaDatabase extends _$MediaDatabase {
         );
       }
       if (from < 9) await customStatement(_scanWorkSchema);
+      if (from < 10) await _createLibraryIdentities();
     },
     onCreate: (m) async {
       await m.createAll();
       await customStatement(_scanWorkSchema);
+      await _createLibraryIdentities();
       // The search index rides outside drift's table classes: FTS5 is a
       // virtual table, fed by the repositories on write.
       await customStatement(
@@ -298,3 +315,10 @@ CREATE TABLE scan_work (
   PRIMARY KEY(library_id,path)
 )
 ''';
+
+// RFC 9562 UUIDv4. SQLite's PRNG supplies 122 random bits. The trigger makes
+// identity creation atomic with library insertion, including direct importers.
+const _uuidSql =
+    "lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' || "
+    "substr(hex(randomblob(2)),2) || '-' || substr('89ab',1+(random() & 3),1) || "
+    "substr(hex(randomblob(2)),2) || '-' || hex(randomblob(6)))";

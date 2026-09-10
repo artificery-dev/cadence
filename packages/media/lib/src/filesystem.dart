@@ -15,3 +15,10 @@ FileSystem get mediaFileSystem =>
       'A media FileSystem must be injected with withMediaFileSystem',
     ));
 paths.Context get mediaPath => mediaFileSystem.path;
+
+/// Explicit platform capability for extractors that must open a real path.
+/// The returned path must stay bound to this filesystem for the whole call;
+/// callers must never canonicalize it through the host filesystem.
+abstract interface class LocalMediaFiles {
+  String localMediaPath(String path);
+}

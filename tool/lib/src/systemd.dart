@@ -22,6 +22,7 @@ Future<void> renderSystemd(
   String name = 'cadence',
   String? user,
   String? group,
+  String? volume,
 }) async {
   if (!['system', 'user'].contains(scope) ||
       !RegExp(r'^[A-Za-z0-9_-]+$').hasMatch(name)) {
@@ -53,6 +54,7 @@ Future<void> renderSystemd(
     data: {
       'executable': systemdExecutable(executable),
       'name': name,
+      'volume': volume == null ? '' : systemdExecutable(volume),
       'service_user': user ?? '',
       'service_group': group ?? '',
     },

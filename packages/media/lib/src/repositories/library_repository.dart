@@ -160,6 +160,15 @@ class LibraryRepository {
       .into(db.libraries)
       .insert(LibrariesCompanion.insert(name: name, type: type));
 
+  Future<String> uuidOf(int libraryId) async =>
+      (await db
+              .customSelect(
+                'SELECT uuid FROM library_identities WHERE library_id = ?',
+                variables: [Variable.withInt(libraryId)],
+              )
+              .getSingle())
+          .read<String>('uuid');
+
   Future<List<LibraryRow>> listLibraries() => db.select(db.libraries).get();
 
   Future<void> renameLibrary(int libraryId, String name) =>

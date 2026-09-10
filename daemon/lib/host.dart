@@ -1,3 +1,4 @@
+import 'endpoint.dart';
 import 'scan_queue.dart';
 import 'dart:async';
 import 'package:crypto/crypto.dart';
@@ -6,7 +7,7 @@ import 'package:cadence_client/cadence_client.dart';
 
 /// Embeddable owner. The application injects the database connection, filesystem,
 /// extraction stack and optional watcher; standalone uses this exact host.
-class MediaHost implements MediaTransport {
+class MediaHost implements MediaEndpoint {
   MediaHost._(
     this.db,
     this.fileSystem,
@@ -35,6 +36,13 @@ class MediaHost implements MediaTransport {
   bool _closed = false;
   Timer? _timer;
   Future<void> _serial = Future.value();
+  Map<String, Object?> get activity => {
+    'runningJobs': _queue.snapshots
+        .where((j) => j['finishedAt'] == null && j['state'] != 'queued')
+        .length,
+    'queuedJobs': _queue.snapshots.where((j) => j['state'] == 'queued').length,
+    'artwork': service.artworkStatus,
+  };
   void resumeJobs() => _queue.start();
 
   static Future<MediaHost> open({
@@ -416,12 +424,18 @@ class MediaHost implements MediaTransport {
     _closed = true;
     _timer?.cancel();
     await _serial;
-    await withMediaFileSystem(fileSystem, () async {
-      await _queue.close();
-      await service.close();
-    });
-    await _events.close();
-    _owners[db] = false;
+    try {
+      await withMediaFileSystem(fileSystem, () async {
+        try {
+          await _queue.close();
+        } finally {
+          await service.close();
+        }
+      });
+    } finally {
+      await _events.close();
+      _owners[db] = false;
+    }
   }
 }
 

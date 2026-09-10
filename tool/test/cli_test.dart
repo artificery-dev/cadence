@@ -93,7 +93,7 @@ void main() {
             )
             ..createSync(recursive: true)
             ..writeAsStringSync(
-              'ExecStart={{ executable }}\nStateDirectory={{ name }}\n{% if service_user != "" %}User={{ service_user }}\n{% endif %}',
+              'ExecStart={{ executable }}{% if volume != "" %} --volume {{ volume }}{% endif %}\nStateDirectory={{ name }}\n{% if service_user != "" %}User={{ service_user }}\n{% endif %}',
             );
         }
         final output = context.at('build/package/cadenced.service');
@@ -128,7 +128,25 @@ void main() {
           output,
         ]);
         expect(fs.file(output).readAsStringSync(), isNot(contains('User=')));
+        expect(fs.file(output).readAsStringSync(), isNot(contains('--volume')));
+        await cli.run([
+          'package',
+          'systemd',
+          '--scope',
+          'user',
+          '--executable',
+          '/usr/bin/cadenced',
+          '--volume',
+          '/mnt/my card',
+          '--output',
+          output,
+        ]);
+        expect(
+          fs.file(output).readAsStringSync(),
+          contains('--volume "/mnt/my card"'),
+        );
         for (final extra in [
+          ['--volume', 'relative'],
           ['--service-user', 'cadence'],
           ['--executable', 'relative'],
           ['--name', '../escape'],

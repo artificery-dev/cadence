@@ -2,19 +2,22 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:cadence_client/cadence_client.dart';
-import 'host.dart';
 import 'local_owner.dart';
+import 'endpoint.dart';
 
 class UnixMediaServer {
   UnixMediaServer._(this.host, this.server, this.socketPath, this._socketOwner);
   final LocalOwner _socketOwner;
-  final MediaHost host;
+  final MediaEndpoint host;
   final HttpServer server;
   final String socketPath;
   final _active = <Future<void>>{};
   bool _closing = false;
   final _stopping = Completer<void>();
-  static Future<UnixMediaServer> bind(MediaHost host, String socketPath) async {
+  static Future<UnixMediaServer> bind(
+    MediaEndpoint host,
+    String socketPath,
+  ) async {
     final parent = Directory(File(socketPath).absolute.parent.path);
     if (!parent.existsSync()) {
       parent.createSync(recursive: true);

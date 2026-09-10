@@ -55,14 +55,26 @@ class MediaService {
   /// when the scan makes its own.
   final ArtworkQueue? _artwork;
 
+  Map<String, Object?> get artworkStatus =>
+      _artwork?.toJson() ?? const {'pending': 0, 'running': false};
+
   Future<ArtworkRow?> artwork(int fileId) async =>
       await _libraries.artworkOf(fileId) ?? await _artwork?.ensure(fileId);
 
   Future<void> close() async {
-    await _coordinator.close();
-    await _watch.stop();
-    await _artwork?.close();
-    await db.close();
+    try {
+      await _coordinator.close();
+    } finally {
+      try {
+        await _watch.stop();
+      } finally {
+        try {
+          await _artwork?.close();
+        } finally {
+          await db.close();
+        }
+      }
+    }
   }
 
   /// Makes the folder watch agree with the `scanner.watchFolders` setting —
@@ -104,17 +116,19 @@ class MediaService {
     return switch ((m, parts)) {
       (ServiceMethod.get, ['libraries']) => _reply(r, 200, {
         'libraries': [
-          for (final row in await _libraries.listLibraries()) _libraryJson(row),
+          for (final row in await _libraries.listLibraries())
+            await _libraryJson(row),
         ],
       }),
-      (ServiceMethod.post, ['libraries']) => _reply(r, 201, {
-        'id': await _libraries.createLibrary(
+      (ServiceMethod.post, ['libraries']) => () async {
+        final id = await _libraries.createLibrary(
           r.body!['name'] as String,
           LibraryType.values.byName(
             r.body!['type'] == 'videos' ? 'movies' : r.body!['type'] as String,
           ),
-        ),
-      }),
+        );
+        return _reply(r, 201, {'id': id, 'uuid': await _libraries.uuidOf(id)});
+      }(),
       (ServiceMethod.put, ['libraries', final id]) => () async {
         await _libraries.renameLibrary(
           int.parse(id),
@@ -362,7 +376,8 @@ class MediaService {
         notes: body['notes'] as String?,
       );
 
-  Map<String, Object?> _libraryJson(LibraryRow row) => {
+  Future<Map<String, Object?>> _libraryJson(LibraryRow row) async => {
+    'uuid': await _libraries.uuidOf(row.id),
     'id': row.id,
     'name': row.name,
     'type': row.type.name,
