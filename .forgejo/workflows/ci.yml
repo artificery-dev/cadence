@@ -49,7 +49,7 @@ env:
 
 jobs:
   toolchain:
-    name: Resolve toolchain image
+    name: Resolve the toolchain image
     runs-on: linux-amd64-container
     timeout-minutes: 10
     outputs:
@@ -84,7 +84,7 @@ jobs:
           echo "exists=$exists" >> "$GITHUB_OUTPUT"
 
   toolchain-build:
-    name: Build and push toolchain image
+    name: Build and push the toolchain image
     needs: toolchain
     if: needs.toolchain.outputs.exists != 'true'
     runs-on: linux-amd64-container
@@ -148,7 +148,7 @@ jobs:
             --compressed-caching=false
 
   check:
-    name: Analyze and test
+    name: Analyze and test the daemon workspace
     needs: [toolchain, toolchain-build]
     if: >-
       always() && needs.toolchain.result == 'success'
@@ -174,7 +174,7 @@ jobs:
         run: cadence check --no-integration
 
   build:
-    name: Build ${{ matrix.arch }}
+    name: Build and package cadenced for ${{ matrix.arch }}
     # After check, not beside it: the amd64 runners share one host, and three
     # release builds next to the integration suites starved its daemons.
     needs: [toolchain, toolchain-build, check]
@@ -252,15 +252,38 @@ jobs:
           retention-days: 30
           if-no-files-found: error
 
-  app:
-    name: Check and build the desktop app
-    # Beside the daemon builds, after check: the Flutter build is the
-    # heaviest job here and the amd64 runners share one host.
-    needs: [toolchain, toolchain-build, check]
+  check-app:
+    name: Analyze and test the desktop app
+    # Beside the daemon's check and the app build, not after them: the
+    # two app jobs are independent, like analysis and packaging are for
+    # the daemon.
+    needs: [toolchain, toolchain-build]
     if: >-
       always() && needs.toolchain.result == 'success'
       && (needs.toolchain-build.result == 'success' || needs.toolchain-build.result == 'skipped')
-      && needs.check.result == 'success'
+    runs-on: linux-amd64-container
+    timeout-minutes: 60
+    container:
+      image: ${{ needs.toolchain.outputs.image }}
+      credentials:
+        username: ${{ secrets.CI_FORGEJO_REGISTRY_USERNAME || github.actor }}
+        password: ${{ secrets.CI_FORGEJO_REGISTRY_TOKEN || secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: https://data.forgejo.org/actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Resolve locked dependencies
+        run: dart pub get --enforce-lockfile
+      - name: Analyze and test the app
+        run: cadence app check
+
+  build-app:
+    name: Build and package the desktop app for amd64
+    needs: [toolchain, toolchain-build]
+    if: >-
+      always() && needs.toolchain.result == 'success'
+      && (needs.toolchain-build.result == 'success' || needs.toolchain-build.result == 'skipped')
     runs-on: linux-amd64-container
     timeout-minutes: 60
     container:
@@ -296,8 +319,6 @@ jobs:
           esac
           echo "CADENCE_VERSION=$version" >> "$GITHUB_ENV"
           echo "Packaging version $version"
-      - name: Analyze and test the app
-        run: cadence app check
       - name: Build the app with cadenced bundled
         run: cadence app build
       - name: Archive the app bundle
@@ -323,8 +344,8 @@ jobs:
           if-no-files-found: error
 
   release:
-    name: Publish release
-    needs: [check, build, app]
+    name: Publish the release
+    needs: [check, build, check-app, build-app]
     if: >-
       (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
       || github.ref == 'refs/heads/ci' 

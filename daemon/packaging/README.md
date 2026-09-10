@@ -93,13 +93,15 @@ on the shared runners, so run the full `cadence check` locally.
 The desktop app's own Debian package comes from `cadence package app-deb`
 (see `app/README.md`); it recommends this one rather than bundling a daemon.
 
-The `app` job runs after `check` in the same image — which carries the
-pinned stable Flutter SDK and the Linux desktop build dependencies (GTK,
-clang/cmake/ninja, libmpv, epoxy) for it — and runs `cadence app check` and
-`cadence app build`, then saves the app bundle tarball (with `cadenced`
-inside) and the app's Debian package as the `cadence-app-amd64` artifact;
-releases attach them beside the daemon packages. Pushes to `develop` and
-`main` run every job but publish nothing.
+The desktop app has two jobs of its own in the same image — which carries
+the pinned stable Flutter SDK and the Linux desktop build dependencies
+(GTK, clang/cmake/ninja, libmpv, epoxy) for it — running side by side once
+the image is resolved: one analyzes and tests the app (`cadence app
+check`), the other builds it (`cadence app build`) and saves the bundle
+tarball (with `cadenced` inside) and the app's Debian package as the
+`cadence-app-amd64` artifact; releases attach them beside the daemon
+packages. Pushes to `develop` and `main` run every job but publish
+nothing.
 
 The jobs run on the `linux-amd64-container` runners,
 which execute every job inside a container with no docker socket and no
