@@ -76,9 +76,11 @@ and fails if the tag and pubspec disagree; every other build is
 
 `.forgejo/workflows/ci.yml` runs on pushes to `main` and `ci`, on pull
 requests, on `v*` tags and on manual dispatch. The `ci` branch is for trying
-the pipeline without touching `main` (which is mirrored publicly): pushes to
-it run everything short of the release, and a manual dispatch from it
-publishes a disposable prerelease at the moving tag `ci-test`.
+the pipeline without touching `main` (which is mirrored publicly): every run
+on it goes through to a disposable prerelease at the moving tag `ci-test`.
+The check job runs `cadence check --no-integration` in CI for now; the daemon
+integration suites spawn real daemons and mounts and have not been reliable
+on the shared runners, so run the full `cadence check` locally.
 
 The jobs run on the `linux-amd64-container` runners,
 which execute every job inside a container with no docker socket and no
