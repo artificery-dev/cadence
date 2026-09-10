@@ -21,8 +21,10 @@ Inside the image `cadence` is the AOT-compiled workspace tool (outside it,
 directory as the workspace when compiled, or `CADENCE_ROOT` when set).
 `--arch` accepts `amd64`, `arm64` and `armhf`; without it `build` targets the
 host into `build/cli`. The container tag comes from `toolchain/digest.sh`,
-which covers `toolchain/`, the tool's sources and the workspace pubspecs, so
-editing any of them rebuilds the image on the next run; `toolchain/run.sh
+which covers `toolchain/`, the tool's sources, the root pubspec and the
+lockfile (not the other members' pubspecs, so a version bump does not
+rebuild the image), so editing any of them rebuilds the image on the next
+run; `toolchain/run.sh
 --shell` opens a shell inside it. Set `CADENCE_CONTAINER_ENGINE=docker` to use
 Docker instead of podman.
 
