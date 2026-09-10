@@ -65,6 +65,21 @@ void main() {
     expect(result.exitCode, 0, reason: '${result.stderr}');
   }
 
+  /// A scratch directory on its own tmpfs. Cards and their bind mounts live
+  /// here so the tests see a real filesystem's detach semantics rather than
+  /// those of whatever backs the runner's temp directory (an overlayfs job
+  /// container answered ENOENT through a held directory fd after a lazy
+  /// unmount, which no card does).
+  Future<Directory> scratch(String prefix) async {
+    final temp = Directory.systemTemp.createTempSync(prefix);
+    await command('mount', ['-t', 'tmpfs', 'tmpfs', temp.path]);
+    addTearDown(() async {
+      await Process.run('umount', ['--lazy', temp.path]);
+      temp.deleteSync(recursive: true);
+    });
+    return temp;
+  }
+
   test('directory store stays pinned when its home path is replaced', () {
     final temp = Directory.systemTemp.createTempSync('cadence-home-pin-');
     addTearDown(() => temp.deleteSync(recursive: true));
@@ -104,8 +119,7 @@ void main() {
   test(
     'declared media base is independent of metadata location in standalone hosting',
     () async {
-      final temp = Directory.systemTemp.createTempSync('cadence-declared-');
-      addTearDown(() => temp.deleteSync(recursive: true));
+      final temp = await scratch('cadence-declared-');
       final card = Directory('${temp.path}/card')..createSync();
       final mount = Directory('${temp.path}/mount')..createSync();
       Directory('${card.path}/Music').createSync();
@@ -287,8 +301,7 @@ void main() {
   test(
     'lazy detach cannot redirect database, journal or cache writes into mountpoint',
     () async {
-      final temp = Directory.systemTemp.createTempSync('cadence-mount-');
-      addTearDown(() => temp.deleteSync(recursive: true));
+      final temp = await scratch('cadence-mount-');
       final source = Directory('${temp.path}/card')..createSync();
       final mount = Directory('${temp.path}/mount')..createSync();
       File('${source.path}/song.mp3').writeAsStringSync('song');
@@ -354,10 +367,7 @@ void main() {
   test(
     'standalone card API, notifications, reconnect, reattach and shutdown',
     () async {
-      final temp = Directory.systemTemp.createTempSync(
-        'cadence-volume-daemon-',
-      );
-      addTearDown(() => temp.deleteSync(recursive: true));
+      final temp = await scratch('cadence-volume-daemon-');
       final card = Directory('${temp.path}/card')..createSync();
       final mount = Directory('${temp.path}/mount')..createSync();
       final secondMount = Directory('${temp.path}/second')..createSync();
@@ -569,8 +579,7 @@ void main() {
   test(
     'local datastore gates startup and pins removable roots through removal and normal eject',
     () async {
-      final temp = Directory.systemTemp.createTempSync('cadence-local-roots-');
-      addTearDown(() => temp.deleteSync(recursive: true));
+      final temp = await scratch('cadence-local-roots-');
       final card = Directory('${temp.path}/card/Music')
         ..createSync(recursive: true);
       final internal = Directory('${temp.path}/home/Music')
