@@ -9,6 +9,7 @@ import 'package:test/test.dart';
 
 class FakeProcesses implements ProcessRunner {
   final calls = <(String, List<String>, String)>[];
+  final environments = <Map<String, String>?>[];
   int result = 0;
   void Function(String, List<String>)? onRun;
   @override
@@ -16,8 +17,10 @@ class FakeProcesses implements ProcessRunner {
     String executable,
     List<String> arguments, {
     required String workingDirectory,
+    Map<String, String>? environment,
   }) async {
     calls.add((executable, arguments, workingDirectory));
+    environments.add(environment);
     onRun?.call(executable, arguments);
     return result;
   }
@@ -162,6 +165,37 @@ void main() {
         );
       },
     );
+    test(
+      'check runs integration suites against a compiled daemon ($style)',
+      () async {
+        fs.file(context.at('LICENSE')).writeAsStringSync('MIT');
+        processes.onRun = fakeBuildOutputs;
+        await cli.run(['check']);
+        final integration = processes.calls.indexWhere(
+          (c) => c.$2.join(' ') == 'test test/integration',
+        );
+        expect(integration, greaterThan(0));
+        expect(processes.calls[integration].$3, context.at('daemon'));
+        expect(processes.environments[integration], {
+          'CADENCE_VOLUME_EXECUTABLE': context.at(
+            'build/cli/bundle/bin/cadenced',
+          ),
+        });
+        final buildIndex = processes.calls.indexWhere(
+          (c) => c.$1 == 'cargo' && c.$2.contains('--release'),
+        );
+        expect(buildIndex, lessThan(integration));
+        expect(processes.calls.last.$2, ['test', '--locked', '--workspace']);
+        processes.calls.clear();
+        await cli.run(['check', '--no-integration']);
+        expect(processes.calls.where((c) => c.$1 == 'cargo'), hasLength(1));
+        expect(
+          processes.calls.any((c) => c.$2.join(' ') == 'test test/integration'),
+          isFalse,
+        );
+      },
+    );
+
     test(
       'Liquid renderer uses injected paths and escapes systemd arguments ($style)',
       () async {

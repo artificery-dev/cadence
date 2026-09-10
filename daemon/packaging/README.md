@@ -6,21 +6,30 @@ also what `.forgejo/workflows/ci.yml` runs. From the repository root:
 
 ```sh
 toolchain/run.sh dart pub get --enforce-lockfile
-toolchain/run.sh dart run tool/bin/cadence.dart build --arch armhf
-toolchain/run.sh dart run tool/bin/cadence.dart package bundle \
+toolchain/run.sh cadence build --arch armhf
+toolchain/run.sh cadence package bundle \
   --bundle build/cli/armhf/bundle --arch armhf \
   --source-commit "$(git rev-parse HEAD)" --dart-version 3.13.2 \
   --output build/dist/cadenced-1.0.0-linux-armhf.tar.gz
-toolchain/run.sh dart run tool/bin/cadence.dart package deb \
+toolchain/run.sh cadence package deb \
   --bundle build/cli/armhf/bundle --arch armhf --version 1.0.0 \
   --maintainer 'Name <email>' --output build/dist
 ```
 
+Inside the image `cadence` is the AOT-compiled workspace tool (outside it,
+`dart run tool/bin/cadence.dart` is the same program; it treats the current
+directory as the workspace when compiled, or `CADENCE_ROOT` when set).
 `--arch` accepts `amd64`, `arm64` and `armhf`; without it `build` targets the
-host into `build/cli`. The container tag is a digest of `toolchain/`, so
-editing the Containerfile rebuilds it on the next run; `toolchain/run.sh
+host into `build/cli`. The container tag comes from `toolchain/digest.sh`,
+which covers `toolchain/`, the tool's sources and the workspace pubspecs, so
+editing any of them rebuilds the image on the next run; `toolchain/run.sh
 --shell` opens a shell inside it. Set `CADENCE_CONTAINER_ENGINE=docker` to use
 Docker instead of podman.
+
+`cadence check` builds the host bundle before the daemon integration suites
+and points them at it through `CADENCE_VOLUME_EXECUTABLE`, so the daemons
+those suites spawn are compiled rather than JIT-run; without that, readiness
+and job timeouts tripped on loaded runners.
 
 ## Bundle
 
@@ -65,8 +74,19 @@ and fails if the tag and pubspec disagree; every other build is
 
 ## Continuous integration
 
-`.forgejo/workflows/ci.yml` runs `cadence check` and one build job per
-architecture on every push and pull request, saves the tarball and `.deb` of
-each as an artifact, and on a `v*` tag publishes a release with all six files
-attached. The jobs run `toolchain/run.sh`, so they need a runner label that
-executes on a host with podman; the workflow uses `native`.
+`.forgejo/workflows/ci.yml` runs on the `linux-amd64-container` runners,
+which execute every job inside a container with no docker socket and no
+privileges. The first job computes the toolchain digest (`toolchain/digest.sh`, the
+same formula `toolchain/run.sh` uses) and asks the instance's container registry
+whether `<host>/<owner>/cadence-toolchain:<digest>` exists; if not, a kaniko
+job builds `toolchain/Containerfile` from the repository archive (context:
+the repository root, trimmed by `.dockerignore`) and pushes it. The check job and one build job per architecture then run inside that
+image, save the tarball and `.deb` of each architecture as artifacts, and on
+a `v*` tag a release is published with all six files attached.
+
+Registry access uses the workflow token by default. If the instance does not
+let workflow tokens read or write packages, set the
+`CI_FORGEJO_REGISTRY_USERNAME` and `CI_FORGEJO_REGISTRY_TOKEN` secrets (the
+same names the outsized workflows use) to an account with package access.
+Changing the toolchain image is a normal commit: the new digest is built on
+the next run and older tags stay in the registry until pruned.

@@ -7,6 +7,7 @@ abstract interface class ProcessRunner {
     String executable,
     List<String> arguments, {
     required String workingDirectory,
+    Map<String, String>? environment,
   });
 }
 
@@ -38,11 +39,13 @@ class ToolContext {
     String executable,
     List<String> arguments, {
     String directory = '',
+    Map<String, String>? environment,
   }) async {
     final code = await processes.run(
       executable,
       arguments,
       workingDirectory: at(directory),
+      environment: environment,
     );
     if (code != 0) throw ToolFailure('$executable failed (exit $code)', code);
   }

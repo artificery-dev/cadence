@@ -1,5 +1,5 @@
 import 'package:args/command_runner.dart';
-import 'package:file/file.dart' show File;
+import 'src/build.dart';
 import 'src/bundle.dart';
 import 'src/context.dart';
 import 'src/debian.dart';
@@ -57,64 +57,12 @@ class _Build extends _Command {
   @override
   Future<void> run() async {
     noRest();
-    final debug = argResults!['debug'] as bool;
     final arch = argResults!['arch'] as String?;
-    final target = arch == null ? null : LinuxTarget.parse(arch);
-    await context.run('cargo', [
-      'build',
-      '--locked',
-      '--workspace',
-      if (!debug) '--release',
-      if (target != null) ...['--target', target.rustTriple],
-      if (target?.crossLinker case final linker?) ...[
-        '--config',
-        'target.${target!.rustTriple}.linker="$linker"',
-      ],
-    ]);
-    // Dart replaces its output directory. Keep it separate from build/rust,
-    // and keep cadencectl's own output inside cadenced's so neither build
-    // deletes the other's bundle.
-    final output = target == null
-        ? context.at('build/cli')
-        : context.at('build/cli/${target.name}');
-    final path = context.path;
-    for (final executable in ['cadenced', 'cadencectl']) {
-      await context.run(context.dartExecutable, [
-        'build',
-        'cli',
-        '--target',
-        'bin/$executable.dart',
-        if (target != null) ...[
-          '--target-os',
-          'linux',
-          '--target-arch',
-          target.dartArch,
-        ],
-        '--output',
-        executable == 'cadenced' ? output : path.join(output, executable),
-      ], directory: 'daemon');
-    }
-    final fs = context.fileSystem;
-    final bundle = path.join(output, 'bundle');
-    // Merge cadencectl's executable (and any snapshot library the SDK put
-    // beside it) into the main bundle; shared assets already exist there.
-    final control = fs.directory(path.join(output, 'cadencectl', 'bundle'));
-    for (final entity in control.listSync(recursive: true)) {
-      if (entity is! File) continue;
-      final destination = fs.file(
-        path.join(bundle, path.relative(entity.path, from: control.path)),
-      );
-      if (destination.existsSync()) continue;
-      destination.parent.createSync(recursive: true);
-      await entity.copy(destination.path);
-    }
-    final probe = context.at(
-      'build/rust/${target == null ? '' : '${target.rustTriple}/'}${debug ? 'debug' : 'release'}/libcadence_probe.so',
+    await buildBundle(
+      context,
+      target: arch == null ? null : LinuxTarget.parse(arch),
+      debug: argResults!['debug'] as bool,
     );
-    fs.directory(path.join(bundle, 'lib')).createSync(recursive: true);
-    await fs.file(probe).copy(path.join(bundle, 'lib', 'libcadence_probe.so'));
-    await fs.file(context.at('LICENSE')).copy(path.join(bundle, 'LICENSE'));
-    context.write('Bundle: $bundle');
   }
 }
 
@@ -174,10 +122,22 @@ class _Check extends _Command {
       'test/core',
     ], directory: 'daemon');
     if (argResults!['integration']) {
-      await context.run(context.dartExecutable, [
-        'test',
-        'test/integration',
-      ], directory: 'daemon');
+      // The integration suites spawn the daemon many times; a compiled host
+      // bundle keeps that free of JIT warm-up, which on loaded runners was
+      // enough to trip readiness and job timeouts.
+      final bundle = await buildBundle(context);
+      await context.run(
+        context.dartExecutable,
+        ['test', 'test/integration'],
+        directory: 'daemon',
+        environment: {
+          'CADENCE_VOLUME_EXECUTABLE': context.path.join(
+            bundle,
+            'bin',
+            'cadenced',
+          ),
+        },
+      );
     }
     await context.run('cargo', ['test', '--locked', '--workspace']);
   }

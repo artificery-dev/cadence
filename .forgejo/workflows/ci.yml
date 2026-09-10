@@ -1,13 +1,15 @@
 # Cadence CI: check the workspace, build cadenced for amd64, arm64 and armhf,
 # and package each as a bundle tarball and a Debian package.
 #
-# Every step runs inside the toolchain image from toolchain/Containerfile via
-# toolchain/run.sh, so the jobs need a runner that executes on a host with
-# podman (or docker, with CADENCE_CONTAINER_ENGINE=docker) rather than inside
-# a job container. The `native` label below is the one knob to change when
-# registering such a runner under a different name. The image is tagged by a
-# digest of toolchain/, so it is rebuilt only when that directory changes and
-# is otherwise reused from the host's image store.
+# The runners are container-only (no docker socket, unprivileged), so every
+# job runs inside an image. The check and build jobs run inside the toolchain
+# image from toolchain/Containerfile — which carries the AOT-compiled
+# workspace tool as `cadence` — and this workflow builds that image with
+# kaniko and pushes it to this Forgejo instance's container registry the
+# first time a given toolchain/digest.sh value is seen; later runs find the
+# tag and skip straight to using it. Registry credentials default to the workflow token and can be
+# overridden with the CI_FORGEJO_REGISTRY_USERNAME / CI_FORGEJO_REGISTRY_TOKEN
+# secrets if the instance does not grant package access to workflow tokens.
 name: CI
 
 "on":
@@ -17,28 +19,122 @@ name: CI
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: write
+  packages: write
+
 env:
   DEB_MAINTAINER: Chris Hendrickson <chris@artificery.dev>
+  TOOLCHAIN_IMAGE: cadence-toolchain
 
 jobs:
+  toolchain:
+    name: Resolve toolchain image
+    runs-on: linux-amd64-container
+    timeout-minutes: 10
+    outputs:
+      image: ${{ steps.resolve.outputs.image }}
+      exists: ${{ steps.resolve.outputs.exists }}
+    steps:
+      - name: Checkout
+        uses: https://data.forgejo.org/actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Compute image tag and look it up in the registry
+        id: resolve
+        env:
+          REGISTRY_USERNAME: ${{ secrets.CI_FORGEJO_REGISTRY_USERNAME || github.actor }}
+          REGISTRY_TOKEN: ${{ secrets.CI_FORGEJO_REGISTRY_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          : "${GITHUB_SERVER_URL:?set by the instance; pass --forgejo-instance to forgejo-runner exec}"
+          : "${GITHUB_REPOSITORY:?}"
+          registry=$(printf %s "$GITHUB_SERVER_URL" | sed 's#^https\?://##')
+          owner=$(printf %s "${GITHUB_REPOSITORY%%/*}" | tr 'A-Z' 'a-z')
+          # The same digest toolchain/run.sh uses locally.
+          digest=$(sh toolchain/digest.sh)
+          image="$registry/$owner/$TOOLCHAIN_IMAGE:$digest"
+          status=$(curl -sS -o /dev/null -w '%{http_code}' \
+            -u "$REGISTRY_USERNAME:$REGISTRY_TOKEN" \
+            -H 'Accept: application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json' \
+            "https://$registry/v2/$owner/$TOOLCHAIN_IMAGE/manifests/$digest" || true)
+          if [ "$status" = 200 ]; then exists=true; else exists=false; fi
+          echo "Toolchain image $image (registry answered $status, exists=$exists)"
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+          echo "exists=$exists" >> "$GITHUB_OUTPUT"
+
+  toolchain-build:
+    name: Build and push toolchain image
+    needs: toolchain
+    if: needs.toolchain.outputs.exists != 'true'
+    runs-on: linux-amd64-container
+    timeout-minutes: 60
+    container:
+      image: gcr.io/kaniko-project/executor:v1.23.2-debug
+    steps:
+      # kaniko's image has busybox but no git or node, so the source comes
+      # from the repository archive API instead of actions/checkout.
+      - name: Build toolchain/Containerfile with kaniko and push
+        env:
+          IMAGE: ${{ needs.toolchain.outputs.image }}
+          REGISTRY_USERNAME: ${{ secrets.CI_FORGEJO_REGISTRY_USERNAME || github.actor }}
+          REGISTRY_TOKEN: ${{ secrets.CI_FORGEJO_REGISTRY_TOKEN || secrets.GITHUB_TOKEN }}
+          API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          registry=${IMAGE%%/*}
+          mkdir -p /kaniko/.docker
+          auth=$(printf '%s:%s' "$REGISTRY_USERNAME" "$REGISTRY_TOKEN" | base64 | tr -d '\n')
+          printf '{"auths":{"%s":{"auth":"%s"}}}' "$registry" "$auth" > /kaniko/.docker/config.json
+          mkdir -p /workspace/src
+          wget -q --header "Authorization: token $API_TOKEN" \
+            -O /workspace/src.tar.gz \
+            "$GITHUB_SERVER_URL/api/v1/repos/$GITHUB_REPOSITORY/archive/$GITHUB_SHA.tar.gz"
+          tar -xzf /workspace/src.tar.gz -C /workspace/src --strip-components=1
+          /kaniko/executor \
+            --context dir:///workspace/src \
+            --dockerfile toolchain/Containerfile \
+            --destination "$IMAGE" \
+            --custom-platform linux/amd64 \
+            --snapshot-mode redo \
+            --compressed-caching=false
+
   check:
     name: Analyze and test
-    runs-on: native
+    needs: [toolchain, toolchain-build]
+    if: >-
+      always() && needs.toolchain.result == 'success'
+      && (needs.toolchain-build.result == 'success' || needs.toolchain-build.result == 'skipped')
+    runs-on: linux-amd64-container
     timeout-minutes: 45
+    container:
+      image: ${{ needs.toolchain.outputs.image }}
+      credentials:
+        username: ${{ secrets.CI_FORGEJO_REGISTRY_USERNAME || github.actor }}
+        password: ${{ secrets.CI_FORGEJO_REGISTRY_TOKEN || secrets.GITHUB_TOKEN }}
     steps:
       - name: Checkout
         uses: https://data.forgejo.org/actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Resolve locked dependencies
-        run: toolchain/run.sh dart pub get --enforce-lockfile
+        run: dart pub get --enforce-lockfile
       - name: Analyze and run every suite
-        run: toolchain/run.sh dart run tool/bin/cadence.dart check
+        run: cadence check
 
   build:
     name: Build ${{ matrix.arch }}
-    runs-on: native
+    needs: [toolchain, toolchain-build]
+    if: >-
+      always() && needs.toolchain.result == 'success'
+      && (needs.toolchain-build.result == 'success' || needs.toolchain-build.result == 'skipped')
+    runs-on: linux-amd64-container
     timeout-minutes: 45
+    container:
+      image: ${{ needs.toolchain.outputs.image }}
+      credentials:
+        username: ${{ secrets.CI_FORGEJO_REGISTRY_USERNAME || github.actor }}
+        password: ${{ secrets.CI_FORGEJO_REGISTRY_TOKEN || secrets.GITHUB_TOKEN }}
     strategy:
       fail-fast: false
       matrix:
@@ -65,30 +161,33 @@ jobs:
               ;;
           esac
           echo "CADENCE_VERSION=$version" >> "$GITHUB_ENV"
+          echo "DART_VERSION=$(dart --version 2>&1 | sed -n 's/^Dart SDK version: \([0-9.]*\).*/\1/p')" >> "$GITHUB_ENV"
           echo "Packaging version $version"
       - name: Resolve locked dependencies
-        run: toolchain/run.sh dart pub get --enforce-lockfile
+        run: dart pub get --enforce-lockfile
       - name: Build bundle
-        run: toolchain/run.sh dart run tool/bin/cadence.dart build --arch ${{ matrix.arch }}
+        run: cadence build --arch ${{ matrix.arch }}
       - name: Verify architecture
-        run: toolchain/run.sh file build/cli/${{ matrix.arch }}/bundle/bin/cadenced build/cli/${{ matrix.arch }}/bundle/bin/cadencectl build/cli/${{ matrix.arch }}/bundle/lib/libsqlite3.so build/cli/${{ matrix.arch }}/bundle/lib/libcadence_probe.so
+        run: |
+          cd build/cli/${{ matrix.arch }}/bundle
+          file bin/cadenced bin/cadencectl lib/libsqlite3.so lib/libcadence_probe.so
       - name: Package bundle tarball
         run: |
-          toolchain/run.sh dart run tool/bin/cadence.dart package bundle \
+          cadence package bundle \
             --bundle build/cli/${{ matrix.arch }}/bundle \
             --arch ${{ matrix.arch }} \
             --source-commit "$GITHUB_SHA" \
-            --dart-version "$(toolchain/run.sh dart --version 2>&1 | sed -n 's/^Dart SDK version: \([0-9.]*\).*/\1/p')" \
+            --dart-version "$DART_VERSION" \
             --output "build/dist/cadenced-${CADENCE_VERSION}-linux-${{ matrix.arch }}.tar.gz"
       - name: Package Debian archive
         run: |
-          toolchain/run.sh dart run tool/bin/cadence.dart package deb \
+          cadence package deb \
             --bundle build/cli/${{ matrix.arch }}/bundle \
             --arch ${{ matrix.arch }} \
             --version "$CADENCE_VERSION" \
             --maintainer "$DEB_MAINTAINER" \
             --output build/dist
-          toolchain/run.sh dpkg-deb --info "build/dist/cadenced_${CADENCE_VERSION}_${{ matrix.arch }}.deb"
+          dpkg-deb --info "build/dist/cadenced_${CADENCE_VERSION}_${{ matrix.arch }}.deb"
       - name: Save packages
         uses: https://data.forgejo.org/forgejo/upload-artifact@5d5d22a31266ced268874388b861e4b58bb5c2f3 # v4.3.1
         with:
@@ -103,7 +202,7 @@ jobs:
     name: Publish release
     needs: [check, build]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    runs-on: native
+    runs-on: linux-amd64-container
     timeout-minutes: 15
     steps:
       - name: Collect packages

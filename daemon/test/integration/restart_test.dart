@@ -6,16 +6,19 @@ import 'package:cadence_client/cadence_client.dart';
 import 'package:cadence_client/unix.dart';
 
 Future<Process> start(String path) async {
-  final process = await Process.start(Platform.resolvedExecutable, [
-    'run',
-    'bin/cadenced.dart',
-    '--database',
-    '$path/library.sqlite',
-    '--cache',
-    '$path/cache',
-    '--socket',
-    '$path/run/socket',
-  ]);
+  final executable = Platform.environment['CADENCE_VOLUME_EXECUTABLE'];
+  final process = await Process.start(
+    executable ?? Platform.resolvedExecutable,
+    [
+      if (executable == null) ...['run', 'bin/cadenced.dart'],
+      '--database',
+      '$path/library.sqlite',
+      '--cache',
+      '$path/cache',
+      '--socket',
+      '$path/run/socket',
+    ],
+  );
   process.stderr.drain<void>();
   final ready = Completer<void>();
   process.stdout.transform(utf8.decoder).transform(const LineSplitter()).listen(
@@ -26,6 +29,11 @@ Future<Process> start(String path) async {
   await ready.future.timeout(const Duration(seconds: 60));
   return process;
 }
+
+/// Status requests share the owner isolate with the 2000-file scans this
+/// test drives, and loaded CI runners have stalled them past the client's
+/// default 30 seconds; the test is about recovery, not latency.
+const patience = Duration(seconds: 120);
 
 void main() {
   test(
@@ -47,7 +55,9 @@ void main() {
         File('${music.path}/$i.mp3').writeAsStringSync('fixture');
       }
       process = await start(dir.path);
-      client = CadenceClient(UnixMediaTransport('${dir.path}/run/socket'));
+      client = CadenceClient(
+        UnixMediaTransport('${dir.path}/run/socket', timeout: patience),
+      );
       final lib = await client.createLibrary('Music', 'music');
       await client.addRoot(lib, music.path);
       final nextLib = await client.createLibrary('Next', 'music');
@@ -76,7 +86,9 @@ void main() {
       process = null;
       await client.close();
       process = await start(dir.path);
-      client = CadenceClient(UnixMediaTransport('${dir.path}/run/socket'));
+      client = CadenceClient(
+        UnixMediaTransport('${dir.path}/run/socket', timeout: patience),
+      );
       Future<Map<String, Object?>> wait(String id) async {
         for (var i = 0; i < 3000; i++) {
           final status = await client!.job(id);

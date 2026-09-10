@@ -1,12 +1,15 @@
 #!/bin/sh
 # Run a command inside the Cadence build toolchain container.
 #
-#   toolchain/run.sh dart run tool/bin/cadence.dart build --arch arm64
+#   toolchain/run.sh cadence build --arch arm64
 #   toolchain/run.sh --shell
 #
 # The image is built from toolchain/Containerfile on first use and tagged
-# with a digest of this directory, so editing the Containerfile rebuilds it
-# automatically. The checkout is bind-mounted at its real host path and the
+# with the digest from toolchain/digest.sh (this directory plus the sources
+# of the workspace tool it AOT-compiles), so editing either rebuilds it
+# automatically; CI computes the same digest to name the image it pushes to
+# the Forgejo registry (see .forgejo/workflows/ci.yml). Inside the image the
+# tool is on PATH as `cadence`. The checkout is bind-mounted at its real host path and the
 # command runs there as the calling user (--userns=keep-id), with cargo and
 # Dart's cross-compilation caches kept under build/ and the host's pub cache
 # shared. Inside the container the command simply runs.
@@ -29,12 +32,15 @@ if [ $# -eq 0 ]; then
   exit 64
 fi
 
-digest=$(cd "$root/toolchain" && find . -type f -not -name '.*' | LC_ALL=C sort | xargs sha256sum | sha256sum | cut -c1-12)
+digest=$(sh "$root/toolchain/digest.sh")
 image="cadence-toolchain:$digest"
 
 if ! "$engine" image exists "$image" 2>/dev/null; then
   echo "Building $image from toolchain/Containerfile" >&2
-  "$engine" build -t "$image" -t cadence-toolchain:latest "$root/toolchain"
+  # The image is x86-64 only (the Dart SDK inside is), so say so rather than
+  # inherit whatever platform the host last pulled the base image for.
+  "$engine" build --platform linux/amd64 -t "$image" -t cadence-toolchain:latest \
+    -f "$root/toolchain/Containerfile" "$root"
 fi
 
 # The pub cache is shared with the host at its own path, so the package
