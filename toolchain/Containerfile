@@ -74,31 +74,47 @@ RUN curl -fsSL "https://storage.googleapis.com/dart-archive/channels/stable/rele
 ENV PATH=/opt/dart-sdk/bin:$PATH
 
 # --- flutter ----------------------------------------------------------------
-# The desktop app in app/ is built here too: the current stable Flutter
-# (pinned, with its archive's checksum) plus the Linux desktop build
-# dependencies — clang/cmake/ninja and GTK for the runner, libmpv and epoxy
-# for media_kit's video plugin. Flutter carries its own Dart; the daemon
-# keeps building with /opt/dart-sdk, which stays first on PATH. The SDK is
-# pre-warmed (tool snapshot, Linux artifacts) and made world-writable, since
-# run.sh executes as the calling user and Flutter writes version stamps
-# into its own tree; the safe.directory entry keeps git from refusing a
-# tree owned by someone else.
+# The desktop app in app/ is built here too: the current stable Flutter,
+# pinned by tag, plus the Linux desktop build dependencies — clang/cmake/
+# ninja and GTK for the runner, libmpv and epoxy for media_kit's video
+# plugin. Flutter carries its own Dart; the daemon keeps building with
+# /opt/dart-sdk, which stays first on PATH.
+#
+# The SDK is laid down in three layers, each kept well under a gigabyte
+# because the registry the image is pushed to refuses larger blobs: a
+# shallow clone of the tag (the release tarball drags 300 MB of history
+# along), the tool's own bootstrap (its Dart SDK and snapshot), and the
+# Linux engine artifacts alone — no Android, iOS or web downloads. Each
+# layer makes what it created world-writable in the same step (a later
+# chmod would copy every file into a new layer): run.sh executes as the
+# calling user and Flutter writes stamps and locks into its own tree. The
+# safe.directory entry keeps git from refusing a tree owned by someone
+# else.
+# Two layers here as well: the compilers, then the libraries.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev \
-        libstdc++-12-dev libmpv-dev libepoxy-dev \
+        clang cmake ninja-build pkg-config libstdc++-12-dev \
+    && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libgtk-3-dev liblzma-dev libmpv-dev libepoxy-dev \
     && rm -rf /var/lib/apt/lists/*
 ARG FLUTTER_VERSION=3.47.3
-ARG FLUTTER_SHA256=988665565cad9091db1baa54bf6d3868bb40e29719592f3c3a164deefd4208e1
-RUN curl -fsSL "https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_${FLUTTER_VERSION}-stable.tar.xz" -o /tmp/flutter.tar.xz \
-    && echo "${FLUTTER_SHA256}  /tmp/flutter.tar.xz" | sha256sum -c - \
-    && tar -xJf /tmp/flutter.tar.xz -C /opt \
-    && rm /tmp/flutter.tar.xz \
+RUN git clone --depth 1 --branch "${FLUTTER_VERSION}" https://github.com/flutter/flutter.git /opt/flutter \
     && git config --system --add safe.directory /opt/flutter \
-    && /opt/flutter/bin/flutter config --no-analytics --enable-linux-desktop \
-    && /opt/flutter/bin/flutter precache --linux \
-    && /opt/flutter/bin/flutter --version \
     && chmod -R a+rwX /opt/flutter
 ENV PATH=$PATH:/opt/flutter/bin
+RUN flutter config --no-analytics --enable-linux-desktop \
+        --no-enable-android --no-enable-ios --no-enable-web \
+        --no-enable-macos-desktop --no-enable-windows-desktop \
+    && flutter --version \
+    && chmod -R a+rwX /opt/flutter/bin/cache
+# Flutter unpacks its downloads with tar, which under a rootless build
+# cannot hand files to owners outside the user namespace; the option tells
+# it not to try. Real root (kaniko in CI) is unaffected.
+RUN TAR_OPTIONS=--no-same-owner flutter precache --linux --no-android --no-ios --no-web \
+        --no-macos --no-windows --no-fuchsia \
+    && rm -rf /opt/flutter/bin/cache/artifacts/engine/android-* \
+    && chmod -R a+rwX /opt/flutter/bin/cache/artifacts \
+    && du -sh /opt/flutter /opt/flutter/bin/cache
 
 # --- node -------------------------------------------------------------------
 # Forgejo Actions runs JavaScript actions (checkout, upload-artifact, the
