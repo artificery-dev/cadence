@@ -7,9 +7,21 @@
 # workspace tool as `cadence` — and this workflow builds that image with
 # kaniko and pushes it to this Forgejo instance's container registry the
 # first time a given toolchain/digest.sh value is seen; later runs find the
-# tag and skip straight to using it. Registry credentials default to the workflow token and can be
-# overridden with the CI_FORGEJO_REGISTRY_USERNAME / CI_FORGEJO_REGISTRY_TOKEN
-# secrets if the instance does not grant package access to workflow tokens.
+# tag and skip straight to using it.
+#
+# Pushing that image needs package write access, which Forgejo does not give
+# the workflow token (GitHub's `permissions:` block is ignored here). The
+# supported way is an Authorized Integration: the workflow requests a
+# short-lived JWT (enable-openid-connect) and the registry accepts it as a
+# Basic-auth password. One-time setup by the integration's owner:
+#   1. Settings > Authorized Integrations > New, type "Forgejo Actions
+#      (Local)", source repository this repo, workflow file ci.yml,
+#      capabilities read:package and write:package.
+#   2. Store its audience (not secret) as the repository variable
+#      CADENCE_REGISTRY_AUDIENCE, e.g. `fj actions variables create
+#      CADENCE_REGISTRY_AUDIENCE u:1:...`.
+# Alternatively the CI_FORGEJO_REGISTRY_USERNAME / CI_FORGEJO_REGISTRY_TOKEN
+# secrets (an access token with package scope) take precedence when set.
 #
 # The `ci` branch exists to exercise this file without touching main (main
 # is mirrored publicly): pushes to it run every job short of the release,
@@ -25,9 +37,7 @@ name: CI
   pull_request:
   workflow_dispatch:
 
-permissions:
-  contents: write
-  packages: write
+enable-openid-connect: true
 
 env:
   DEB_MAINTAINER: Chris Hendrickson <chris@artificery.dev>
@@ -78,30 +88,53 @@ jobs:
     container:
       image: gcr.io/kaniko-project/executor:v1.23.2-debug
     steps:
-      # kaniko's image has busybox (whose wget lacks TLS) but no git or node,
-      # so kaniko clones the source itself through its git context instead of
-      # actions/checkout. Pushes pin the exact commit; a pull request builds
-      # the tip of its source branch, since its merge commit is on no branch.
+      # kaniko's image has busybox (whose wget lacks TLS) but no git, curl or
+      # node. Credentials are therefore obtained by a curl docker action,
+      # which shares the job workspace, and kaniko clones the source itself
+      # through its git context. Pushes pin the exact commit; a pull request
+      # builds the tip of its source branch, since its merge commit is on no
+      # branch.
+      - name: Obtain registry credentials
+        uses: docker://docker.io/curlimages/curl:8.22.0
+        env:
+          IMAGE: ${{ needs.toolchain.outputs.image }}
+          AUDIENCE: ${{ vars.CADENCE_REGISTRY_AUDIENCE }}
+          REGISTRY_USERNAME: ${{ secrets.CI_FORGEJO_REGISTRY_USERNAME }}
+          REGISTRY_TOKEN: ${{ secrets.CI_FORGEJO_REGISTRY_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        with:
+          entrypoint: /bin/sh
+          args: >-
+            -eu -c '
+            registry=${IMAGE%%/*}; path=${IMAGE#*/}; path=${path%%:*};
+            if [ -n "$REGISTRY_TOKEN" ]; then
+              user=$REGISTRY_USERNAME; pass=$REGISTRY_TOKEN; how="the CI_FORGEJO_REGISTRY_* secrets";
+            elif [ -n "$AUDIENCE" ]; then
+              : "${ACTIONS_ID_TOKEN_REQUEST_URL:?enable-openid-connect did not provide an ID token endpoint}";
+              pass=$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$AUDIENCE" | sed -n "s/.*\"value\":\"\([^\"]*\)\".*/\1/p");
+              [ -n "$pass" ] || { echo "::error::No JWT for audience $AUDIENCE; check the Authorized Integration restricts to this repository, ci.yml and this event"; exit 1; };
+              user=$ACTOR; how="an Authorized Integration JWT (audience $AUDIENCE)";
+            else
+              echo "::error::No registry credentials: set the CADENCE_REGISTRY_AUDIENCE variable to an Authorized Integration with package write capability, or the CI_FORGEJO_REGISTRY_USERNAME / CI_FORGEJO_REGISTRY_TOKEN secrets."; exit 1;
+            fi;
+            status=$(curl -sS -o /dev/null -w "%{http_code}" -u "$user:$pass" "https://$registry/v2/token?service=container_registry&scope=repository:$path:pull,push");
+            [ "$status" = 200 ] || { echo "::error::Registry $registry refused push credentials from $how (HTTP $status)"; exit 1; };
+            echo "Registry $registry accepted push credentials from $how";
+            printf "{\"auths\":{\"%s\":{\"auth\":\"%s\"}}}" "$registry" "$(printf "%s:%s" "$user" "$pass" | base64 | tr -d "\n")" > "$GITHUB_WORKSPACE/.registry-auth.json"
+            '
       - name: Build toolchain/Containerfile with kaniko and push
         env:
           IMAGE: ${{ needs.toolchain.outputs.image }}
-          REGISTRY_USERNAME: ${{ secrets.CI_FORGEJO_REGISTRY_USERNAME || github.actor }}
-          REGISTRY_TOKEN: ${{ secrets.CI_FORGEJO_REGISTRY_TOKEN || secrets.GITHUB_TOKEN }}
           GIT_USERNAME: ${{ github.actor }}
           GIT_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
           SOURCE_REF: ${{ github.head_ref && format('refs/heads/{0}', github.head_ref) || github.ref }}
           SOURCE_SHA: ${{ github.head_ref && '' || github.sha }}
         run: |
           set -eu
-          registry=${IMAGE%%/*}
           mkdir -p /kaniko/.docker
-          auth=$(printf '%s:%s' "$REGISTRY_USERNAME" "$REGISTRY_TOKEN" | base64 | tr -d '\n')
-          printf '{"auths":{"%s":{"auth":"%s"}}}' "$registry" "$auth" > /kaniko/.docker/config.json
+          mv "$GITHUB_WORKSPACE/.registry-auth.json" /kaniko/.docker/config.json
           context="git://${GITHUB_SERVER_URL#*://}/${GITHUB_REPOSITORY}.git#${SOURCE_REF}${SOURCE_SHA:+#$SOURCE_SHA}"
           echo "Building $IMAGE from $context"
-          if [ "$REGISTRY_TOKEN" = "$GIT_PASSWORD" ]; then
-            echo "::notice::Pushing with the workflow token. If the push fails with 401 reqPackageAccess, this instance does not grant workflow tokens package access: add the CI_FORGEJO_REGISTRY_USERNAME and CI_FORGEJO_REGISTRY_TOKEN secrets (an access token with package read/write scope)."
-          fi
           /kaniko/executor \
             --context "$context" \
             --dockerfile toolchain/Containerfile \

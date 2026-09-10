@@ -90,9 +90,22 @@ the repository root, trimmed by `.dockerignore`) and pushes it. The check job an
 image, save the tarball and `.deb` of each architecture as artifacts, and on
 a `v*` tag a release is published with all six files attached.
 
-Registry access uses the workflow token by default. If the instance does not
-let workflow tokens read or write packages, set the
-`CI_FORGEJO_REGISTRY_USERNAME` and `CI_FORGEJO_REGISTRY_TOKEN` secrets (the
-same names the outsized workflows use) to an account with package access.
+Pushing the image needs package write access, which Forgejo does not grant
+the workflow token (GitHub's `permissions:` block is ignored). The workflow
+therefore uses an Authorized Integration: with `enable-openid-connect: true`
+it requests a short-lived JWT that the container registry accepts as a
+Basic-auth password. One-time setup by the integration's owner:
+
+1. Forgejo Settings > Authorized Integrations > New: type "Forgejo Actions
+   (Local)", source repository `artificery/cadence`, workflow file `ci.yml`,
+   capabilities `read:package` and `write:package`.
+2. Store its audience, which is not secret, as the repository variable
+   `CADENCE_REGISTRY_AUDIENCE` (`fj actions variables create
+   CADENCE_REGISTRY_AUDIENCE u:1:...`).
+
+The `CI_FORGEJO_REGISTRY_USERNAME` / `CI_FORGEJO_REGISTRY_TOKEN` secrets (an
+access token with package scope, the outsized convention) take precedence
+when set. The credential step verifies push access against the registry's
+token endpoint before kaniko starts and says which source it used.
 Changing the toolchain image is a normal commit: the new digest is built on
 the next run and older tags stay in the registry until pruned.
