@@ -18,16 +18,19 @@ void main() {
       ).copySync('${root.path}/track.mp3');
       final socket = '${dir.path}/run/media.sock';
       final database = '${dir.path}/library.sqlite';
-      final process = await Process.start(Platform.resolvedExecutable, [
-        'run',
-        'bin/cadenced.dart',
-        '--database',
-        database,
-        '--cache',
-        '${dir.path}/cache',
-        '--socket',
-        socket,
-      ]);
+      final executable = Platform.environment['CADENCE_VOLUME_EXECUTABLE'];
+      final process = await Process.start(
+        executable ?? Platform.resolvedExecutable,
+        [
+          if (executable == null) ...['run', 'bin/cadenced.dart'],
+          '--database',
+          database,
+          '--cache',
+          '${dir.path}/cache',
+          '--socket',
+          socket,
+        ],
+      );
       final lines = process.stdout
           .transform(utf8.decoder)
           .transform(const LineSplitter())

@@ -39,13 +39,19 @@ class EnteredTier extends GateTier {
   }
 }
 
+/// Polls a job until it finishes. The bound is generous because integration
+/// suites run a JIT daemon with the native probe on loaded CI runners; a
+/// finished job returns as soon as it lands.
 Future<Map<String, Object?>> settle(CadenceClient client, String id) async {
-  for (var i = 0; i < 500; i++) {
+  final deadline = DateTime.now().add(const Duration(seconds: 60));
+  while (true) {
     final job = await client.job(id);
     if (job['finishedAt'] != null) return job;
+    if (DateTime.now().isAfter(deadline)) {
+      throw StateError('Job did not finish within 60s: $job');
+    }
     await Future<void>.delayed(const Duration(milliseconds: 10));
   }
-  throw StateError('Job did not finish');
 }
 
 void main() {

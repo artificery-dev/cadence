@@ -1,8 +1,13 @@
 import 'package:args/command_runner.dart';
+import 'src/build.dart';
+import 'src/bundle.dart';
 import 'src/context.dart';
+import 'src/debian.dart';
 import 'src/systemd.dart';
 import 'src/fixtures.dart';
+import 'src/targets.dart';
 export 'src/context.dart';
+export 'src/targets.dart';
 
 class CadenceTool extends CommandRunner<void> {
   CadenceTool(ToolContext context, {Future<void> Function(String?)? demo})
@@ -34,7 +39,15 @@ abstract class _Command extends Command<void> {
 
 class _Build extends _Command {
   _Build(super.context) {
-    argParser.addFlag('debug', negatable: false);
+    argParser
+      ..addFlag('debug', negatable: false)
+      ..addOption(
+        'arch',
+        allowed: LinuxTarget.names,
+        help:
+            'Cross-build a complete Linux bundle for a Debian architecture '
+            'into build/cli/<arch>; omit to build for this host into build/cli.',
+      );
   }
   @override
   String get name => 'build';
@@ -44,21 +57,12 @@ class _Build extends _Command {
   @override
   Future<void> run() async {
     noRest();
-    await context.run('cargo', [
-      'build',
-      '--locked',
-      '--workspace',
-      if (!argResults!['debug']) '--release',
-    ]);
-    // Dart replaces its output directory. Keep it separate from build/rust.
-    await context.run(context.dartExecutable, [
-      'build',
-      'cli',
-      '--target',
-      'bin/cadenced.dart',
-      '--output',
-      context.at('build/cli'),
-    ], directory: 'daemon');
+    final arch = argResults!['arch'] as String?;
+    await buildBundle(
+      context,
+      target: arch == null ? null : LinuxTarget.parse(arch),
+      debug: argResults!['debug'] as bool,
+    );
   }
 }
 
@@ -118,10 +122,22 @@ class _Check extends _Command {
       'test/core',
     ], directory: 'daemon');
     if (argResults!['integration']) {
-      await context.run(context.dartExecutable, [
-        'test',
-        'test/integration',
-      ], directory: 'daemon');
+      // The integration suites spawn the daemon many times; a compiled host
+      // bundle keeps that free of JIT warm-up, which on loaded runners was
+      // enough to trip readiness and job timeouts.
+      final bundle = await buildBundle(context);
+      await context.run(
+        context.dartExecutable,
+        ['test', 'test/integration'],
+        directory: 'daemon',
+        environment: {
+          'CADENCE_VOLUME_EXECUTABLE': context.path.join(
+            bundle,
+            'bin',
+            'cadenced',
+          ),
+        },
+      );
     }
     await context.run('cargo', ['test', '--locked', '--workspace']);
   }
@@ -130,6 +146,8 @@ class _Check extends _Command {
 class _Package extends _Command {
   _Package(super.context) {
     addSubcommand(_Systemd(context));
+    addSubcommand(_Bundle(context));
+    addSubcommand(_Deb(context));
   }
   @override
   String get name => 'package';
@@ -160,6 +178,12 @@ class _Systemd extends _Command {
         help:
             'Existing portable-library mountpoint; initialization is a separate explicit step.',
       )
+      ..addFlag(
+        'native',
+        negatable: false,
+        help:
+            'Start the daemon with --native true (the probe must be installed).',
+      )
       ..addOption('output', mandatory: true);
   }
   @override
@@ -180,6 +204,88 @@ class _Systemd extends _Command {
       group: argResults!['service-group'] as String?,
       volume: argResults!['volume'] as String?,
       availability: argResults!['availability'] as String,
+      native: argResults!['native'] as bool,
+    );
+  }
+}
+
+class _Bundle extends _Command {
+  _Bundle(super.context) {
+    argParser
+      ..addOption(
+        'bundle',
+        mandatory: true,
+        help: 'A bundle directory produced by `cadence build`.',
+      )
+      ..addOption('arch', allowed: LinuxTarget.names, mandatory: true)
+      ..addOption(
+        'source-commit',
+        mandatory: true,
+        help: 'Full SHA-1 of the source revision recorded in the manifest.',
+      )
+      ..addOption(
+        'dart-version',
+        mandatory: true,
+        help: 'Dart SDK version that produced the bundle, e.g. 3.13.2.',
+      )
+      ..addOption('output', mandatory: true, help: 'Tarball path (.tar.gz).');
+  }
+  @override
+  String get name => 'bundle';
+  @override
+  String get description =>
+      'Write the bundle manifest and archive the bundle as a tarball.';
+  @override
+  Future<void> run() async {
+    noRest();
+    await packageBundle(
+      context,
+      bundle: requiredOption('bundle'),
+      target: LinuxTarget.parse(requiredOption('arch')),
+      sourceCommit: requiredOption('source-commit'),
+      dartVersion: requiredOption('dart-version'),
+      output: requiredOption('output'),
+    );
+  }
+}
+
+class _Deb extends _Command {
+  _Deb(super.context) {
+    argParser
+      ..addOption(
+        'bundle',
+        mandatory: true,
+        help: 'A bundle directory produced by `cadence build`.',
+      )
+      ..addOption('arch', allowed: LinuxTarget.names, mandatory: true)
+      ..addOption(
+        'version',
+        mandatory: true,
+        help:
+            'Debian package version, e.g. 1.0.0 or 1.0.0~git20260910.abc1234.',
+      )
+      ..addOption(
+        'maintainer',
+        mandatory: true,
+        help: 'Package maintainer as "Name <email>".',
+      )
+      ..addOption('output', mandatory: true, help: 'Directory for the .deb.');
+  }
+  @override
+  String get name => 'deb';
+  @override
+  String get description =>
+      'Build a Debian binary package from a bundle with dpkg-deb.';
+  @override
+  Future<void> run() async {
+    noRest();
+    await packageDebian(
+      context,
+      bundle: requiredOption('bundle'),
+      target: LinuxTarget.parse(requiredOption('arch')),
+      version: requiredOption('version'),
+      maintainer: requiredOption('maintainer'),
+      output: requiredOption('output'),
     );
   }
 }

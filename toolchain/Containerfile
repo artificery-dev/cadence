@@ -1,0 +1,109 @@
+# Cadence build toolchain.
+#
+# Everything needed to check, build and package cadenced for amd64, arm64
+# and armhf lives in here, so a checkout builds on any host with podman (or
+# docker) and nothing else installed. CI runs its jobs inside this very
+# image: the workflow builds it with kaniko on the container runners and
+# pushes it to the Forgejo registry, tagged by toolchain/digest.sh.
+#
+# The workspace tool (tool/bin/cadence.dart) is AOT-compiled into the image
+# as `cadence`, and the workspace's pub cache is pre-populated, so a CI job
+# starts building instead of resolving and JIT-compiling the tool. The build
+# context is the repository root, trimmed by .dockerignore to the tool's
+# sources and the workspace pubspecs.
+#
+#   toolchain/run.sh cadence check
+#   toolchain/run.sh cadence build --arch armhf
+#
+# The base is Debian bookworm on purpose: the cross toolchains link the
+# native probe against bookworm's glibc 2.36, which is what the armhf device
+# (Tempo's Y2) and current Raspberry Pi OS run, so the shipped packages do
+# not demand a newer libc than their targets have.
+FROM debian:bookworm-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# --- cross linkers ----------------------------------------------------------
+# build-essential links the host (amd64) target; the two cross compilers with
+# their libc headers link arm64 and armhf. dpkg-dev supplies dpkg-deb for the
+# Debian packages, file lets a build inspect what it produced, and util-linux
+# holds the unshare the volume integration tests try (and skip without).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        gcc-aarch64-linux-gnu libc6-dev-arm64-cross \
+        gcc-arm-linux-gnueabihf libc6-dev-armhf-cross \
+        dpkg-dev file git ca-certificates curl unzip xz-utils util-linux \
+    && rm -rf /var/lib/apt/lists/*
+
+# --- rust -------------------------------------------------------------------
+# Baked into the image so the container is self-sufficient. CARGO_HOME is
+# overridden at run time by toolchain/run.sh to a path under build/, which
+# keeps the registry cache with the rest of the build output. The version
+# matches the pin Tempo's toolchain builds cadence-probe with.
+ENV RUSTUP_HOME=/opt/rustup \
+    CARGO_HOME=/opt/cargo \
+    PATH=/opt/cargo/bin:$PATH
+ARG RUST_VERSION=1.92.0
+RUN curl -fsSL https://sh.rustup.rs \
+      | sh -s -- -y --no-modify-path --profile minimal \
+        --default-toolchain ${RUST_VERSION} \
+        --target aarch64-unknown-linux-gnu,armv7-unknown-linux-gnueabihf \
+    && chmod -R a+rX,a+w /opt/cargo /opt/rustup \
+    && rustc --version
+
+# Cross-linking for the two foreign targets.
+ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
+    CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc
+
+# --- dart -------------------------------------------------------------------
+# The stable SDK Tempo pins for daemon builds. `dart build cli --target-arch`
+# fetches the matching gen_snapshot and dartaotruntime for each foreign
+# architecture into $HOME/.dart at first use; run.sh keeps that HOME under
+# build/ so the download happens once per checkout. Older and newer SDKs
+# were seen to package the wrong launcher for cross builds, so change the
+# version only with a `file bundle/bin/cadenced` check on every architecture.
+ARG DART_VERSION=3.13.2
+ARG DART_SDK_SHA256=28951c9f6bcca005a73aa24cd5e11478dd6555f53e8e96a33ef4d868b6efa9eb
+RUN curl -fsSL "https://storage.googleapis.com/dart-archive/channels/stable/release/${DART_VERSION}/sdk/dartsdk-linux-x64-release.zip" -o /tmp/dart.zip \
+    && echo "${DART_SDK_SHA256}  /tmp/dart.zip" | sha256sum -c - \
+    && unzip -q /tmp/dart.zip -d /opt \
+    && rm /tmp/dart.zip \
+    && chmod -R a+rX /opt/dart-sdk \
+    && /opt/dart-sdk/bin/dart --version
+ENV PATH=/opt/dart-sdk/bin:$PATH
+
+# --- node -------------------------------------------------------------------
+# Forgejo Actions runs JavaScript actions (checkout, upload-artifact, the
+# release action) with the job container's own Node, so the image carries
+# the current Node 24 LTS the runners' default images also use.
+ARG NODE_VERSION=24.21.0
+ARG NODE_SHA256=fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6
+RUN curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" -o /tmp/node.tar.xz \
+    && echo "${NODE_SHA256}  /tmp/node.tar.xz" | sha256sum -c - \
+    && mkdir -p /opt/node \
+    && tar -xJf /tmp/node.tar.xz -C /opt/node --strip-components=1 \
+    && rm /tmp/node.tar.xz \
+    && ln -s /opt/node/bin/node /usr/local/bin/node \
+    && node --version
+
+# --- workspace tool ---------------------------------------------------------
+# Resolve the workspace once into a shared, world-writable pub cache (the
+# lockfile pins every version, so a job's `dart pub get --enforce-lockfile`
+# finds everything present) and compile the tool to a native executable.
+# Only the pubspecs of the other workspace members are needed for resolution.
+ENV PUB_CACHE=/opt/pub-cache
+COPY pubspec.yaml pubspec.lock LICENSE /opt/cadence-src/
+COPY daemon/pubspec.yaml /opt/cadence-src/daemon/
+COPY packages/media/pubspec.yaml /opt/cadence-src/packages/media/
+COPY packages/client /opt/cadence-src/packages/client
+COPY tool /opt/cadence-src/tool
+RUN cd /opt/cadence-src \
+    && dart pub get --enforce-lockfile \
+    && dart compile exe tool/bin/cadence.dart -o /usr/local/bin/cadence \
+    && cd / \
+    && rm -rf /opt/cadence-src \
+    && chmod -R a+rwX /opt/pub-cache \
+    && cadence --help >/dev/null
+
+# Lets tooling detect that it is already inside the toolchain image.
+ENV CADENCE_TOOLCHAIN=1

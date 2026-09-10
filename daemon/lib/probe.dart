@@ -53,10 +53,12 @@ class ProbeExtractor implements MetadataExtractor {
   /// the stack simply runs without the tier.
   ///
   /// The search, in order: `CADENCE_PROBE_PATH` (a file, or a directory
-  /// holding the library), beside `Platform.resolvedExecutable`, the
-  /// workspace's `build/rust/release` and `build/rust/debug` — anchored both at
-  /// `Directory.current` and at the package root this source resolves to
-  /// — and finally the bare soname for the system loader to place.
+  /// holding the library), beside `Platform.resolvedExecutable`, in the
+  /// `lib` directory next to the executable's `bin` (the `dart build cli`
+  /// bundle layout the packages ship), the workspace's `build/rust/release`
+  /// and `build/rust/debug` — anchored both at `Directory.current` and at
+  /// the package root this source resolves to — and finally the bare soname
+  /// for the system loader to place.
   static ProbeExtractor? tryLoad() {
     for (final candidate in _candidates()) {
       final ProbeExtractor? loaded = _openAndBind(candidate);
@@ -78,7 +80,9 @@ class ProbeExtractor implements MetadataExtractor {
           ? p.join(fromEnv, _soname)
           : fromEnv;
     }
-    yield p.join(p.dirname(Platform.resolvedExecutable), _soname);
+    final binDirectory = p.dirname(Platform.resolvedExecutable);
+    yield p.join(binDirectory, _soname);
+    yield p.join(p.dirname(binDirectory), 'lib', _soname);
     // The dev loop runs from the repo root; tests run from the package.
     // Walk a few levels up from both anchors looking for the crate.
     final anchors = [Directory.current.path, ?_packageRoot()];
