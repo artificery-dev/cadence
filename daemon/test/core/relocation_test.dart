@@ -349,6 +349,108 @@ void main() {
       hasLength(1),
     );
   });
+
+  test(
+    'preflight is read-only and identifies empty, active and retired destinations',
+    () async {
+      Future<Map<String, Object?>> inspect({
+        bool reverse = false,
+        String operation = 'outward',
+      }) => relocateDatastore(
+        source: reverse ? destination.store : source.store,
+        destination: reverse ? source.store : destination.store,
+        operationId: operation,
+        expectedId: id,
+        checkOnly: true,
+        onMutation: () => fail('Preflight attempted mutation'),
+      );
+      final bytes = sourceFs.file('/.cadence/library.sqlite').readAsBytesSync();
+      final empty = await inspect();
+      expect(empty['disposition'], 'empty-destination');
+      expect(empty['canRelocate'], true);
+      expect(empty['cancelSafe'], true);
+      expect(
+        sourceFs.file('/.cadence/library.sqlite').readAsBytesSync(),
+        bytes,
+      );
+      expect(relocationRecord(source.db), null);
+      await move();
+      final completed = await inspect();
+      expect(completed['disposition'], 'already-complete');
+      expect(completed['cancelSafe'], false);
+      final returning = await inspect(reverse: true, operation: 'return');
+      expect(returning['disposition'], 'reuse-retired');
+      expect(returning['canRelocate'], true);
+      expect(returning['cancelSafe'], true);
+    },
+  );
+
+  test(
+    'active destination can be selected without replacing it; rejection is cancel-safe',
+    () async {
+      await for (final _ in source.db.backup(destination.db)) {}
+      var plan = await relocateDatastore(
+        source: source.store,
+        destination: destination.store,
+        operationId: 'outward',
+        expectedId: id,
+        checkOnly: true,
+      );
+      expect(
+        plan['canUseExisting'],
+        false,
+        reason: 'Do not recommend an active clone of the same datastore',
+      );
+      destination.db.execute(
+        "UPDATE cadence_volume SET id='another-library-store'",
+      );
+      plan = await relocateDatastore(
+        source: source.store,
+        destination: destination.store,
+        operationId: 'outward',
+        expectedId: id,
+        checkOnly: true,
+      );
+      expect(plan['canRelocate'], false);
+      expect(plan['canUseExisting'], true);
+      expect(
+        (plan['destination'] as Map)['datastoreId'],
+        'another-library-store',
+      );
+      var mutated = false;
+      await expectLater(
+        relocateDatastore(
+          source: source.store,
+          destination: destination.store,
+          operationId: 'outward',
+          expectedId: id,
+          onMutation: () => mutated = true,
+        ),
+        throwsA(isA<MediaError>()),
+      );
+      expect(
+        relocationCancelSafe(
+          source: source.store,
+          destination: destination.store,
+          operationId: 'outward',
+          expectedId: id,
+          mutationStarted: mutated,
+        ),
+        true,
+      );
+      destination.available = false;
+      expect(
+        relocationCancelSafe(
+          source: source.store,
+          destination: destination.store,
+          operationId: 'outward',
+          expectedId: id,
+          mutationStarted: false,
+        ),
+        false,
+      );
+    },
+  );
   test(
     'cancellation and unavailable storage do not publish a successful copy',
     () async {

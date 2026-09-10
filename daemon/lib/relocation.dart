@@ -52,6 +52,98 @@ void requireActiveDatastore(Database db) {
   }
 }
 
+/// Inspection is performed while the caller holds exclusive ownership. It does
+/// not initialize, migrate, resume jobs, or change the relocation journal.
+Map<String, Object?> inspectRelocationStore(RelocationStore store) {
+  final db = store.database;
+  final tables = db
+      .select(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
+      )
+      .map((r) => r['name'])
+      .toSet();
+  final result = <String, Object?>{
+    'store': store.location,
+    'storageKind': store.storageKind,
+    'state': 'unsupported',
+    'canOpen': false,
+  };
+  if (tables.isEmpty) return {...result, 'state': 'empty'};
+  final record = relocationRecord(db);
+  if (record != null)
+    result.addAll({
+      'operationId': record['operation_id'],
+      'relocationState': record['state'],
+    });
+  if (!tables.contains('cadence_volume') ||
+      !tables.contains('cadence_media_base') ||
+      db.userVersion != 10 ||
+      !db
+          .select('PRAGMA table_info(cadence_media_base)')
+          .any((r) => r['name'] == 'mount')) {
+    return {...result, if (record != null) 'state': 'pending'};
+  }
+  final ids = db.select('SELECT id,format_version FROM cadence_volume');
+  final config = db.select('SELECT root,mount FROM cadence_media_base');
+  if (ids.length != 1 ||
+      ids.single['format_version'] != 1 ||
+      config.length != 1)
+    return result;
+  final root = config.single['root'];
+  final mount = config.single['mount'];
+  if (root is! String || (mount != null && mount is! String)) return result;
+  final path = store.fileSystem.path;
+  final resolvedRoot = root == '.' ? path.dirname(store.location) : root;
+  final resolvedMount = mount == '.'
+      ? path.dirname(store.location)
+      : mount as String?;
+  if (!path.isAbsolute(resolvedRoot) ||
+      path.normalize(resolvedRoot) != resolvedRoot ||
+      (resolvedMount != null &&
+          (!path.isAbsolute(resolvedMount) ||
+              path.normalize(resolvedMount) != resolvedMount ||
+              !(resolvedRoot == resolvedMount ||
+                  path.isWithin(resolvedMount, resolvedRoot)))))
+    return result;
+  final state = record == null || record['state'] == 'active'
+      ? 'active'
+      : record['state'] == 'retired'
+      ? 'retired'
+      : 'pending';
+  return {
+    ...result,
+    'state': state,
+    'canOpen': state == 'active',
+    'datastoreId': ids.single['id'],
+    'mediaRoot': config.single['root'],
+    'mediaMount': config.single['mount'],
+  };
+}
+
+/// A definitive rejection before this operation wrote any transfer state may
+/// be dismissed by the supervisor. Uninspectable or already-pending states are
+/// deliberately not classified as cancel-safe.
+bool relocationCancelSafe({
+  required RelocationStore source,
+  required RelocationStore destination,
+  required String operationId,
+  required String expectedId,
+  required bool mutationStarted,
+}) {
+  try {
+    if (mutationStarted || !source.available() || !destination.available())
+      return false;
+    final inspected = inspectRelocationStore(source);
+    if (inspected['state'] != 'active' ||
+        inspected['datastoreId'] != expectedId)
+      return false;
+    final target = relocationRecord(destination.database);
+    return target == null || target['operation_id'] != operationId;
+  } catch (_) {
+    return false;
+  }
+}
+
 /// Current-format metadata/cache relocation. Media is never copied or deleted.
 ///
 /// The source stays intact, but becomes permanently retired on commit. A
@@ -69,6 +161,8 @@ Future<Map<String, Object?>> relocateDatastore({
   required String expectedId,
   bool Function()? cancelled,
   void Function(Map<String, Object?>)? progress,
+  bool checkOnly = false,
+  void Function()? onMutation,
 }) async {
   Never fail(String code, String message) =>
       throw MediaError(code, message, 409);
@@ -160,6 +254,29 @@ Future<Map<String, Object?>> relocateDatastore({
                   path.isWithin(mediaMount, mediaRoot)))))
     fail('unsupported_datastore_format', 'Invalid declared media base');
   final before = relocationRecord(from), existing = relocationRecord(to);
+  Map<String, Object?> plan(String disposition, {bool allowed = true}) {
+    final target = inspectRelocationStore(destination);
+    return {
+      'event': 'relocation-preflight',
+      'operationId': operationId,
+      'canRelocate': allowed,
+      'disposition': disposition,
+      'source': inspectRelocationStore(source),
+      'destination': target,
+      'canUseExisting':
+          !allowed &&
+          target['canOpen'] == true &&
+          target['datastoreId'] != expectedId,
+      'cancelSafe': relocationCancelSafe(
+        source: source,
+        destination: destination,
+        operationId: operationId,
+        expectedId: expectedId,
+        mutationStarted: false,
+      ),
+    };
+  }
+
   bool same(Map<String, Object?>? record) =>
       record != null &&
       record['operation_id'] == operationId &&
@@ -211,6 +328,7 @@ Future<Map<String, Object?>> relocateDatastore({
       existing!['state'] == 'active') {
     if (to.select('SELECT id FROM cadence_volume').single['id'] != expectedId)
       fail('datastore_mismatch', 'Destination identity changed');
+    if (checkOnly) return plan('already-complete');
     destination.flush();
     return result();
   }
@@ -230,11 +348,20 @@ Future<Map<String, Object?>> relocateDatastore({
       !returning &&
       !(same(existing) &&
           ['incoming', 'outgoing', 'prepared'].contains(existing!['state']))) {
+    if (checkOnly) return plan('destination-exists', allowed: false);
     fail(
       'destination_exists',
       'Destination already contains a datastore; it will not be overwritten',
     );
   }
+  if (checkOnly)
+    return plan(
+      empty
+          ? 'empty-destination'
+          : returning
+          ? 'reuse-retired'
+          : 'resume',
+    );
   final cacheFiles = <File>[];
   final cache = source.fileSystem.directory(source.cacheDirectory);
   if (cache.existsSync()) {
@@ -251,6 +378,7 @@ Future<Map<String, Object?>> relocateDatastore({
       cacheFiles.add(entity);
     }
   }
+  onMutation?.call();
   for (final db in [from, to]) {
     db.execute('PRAGMA journal_mode=DELETE');
     db.execute('PRAGMA synchronous=EXTRA');

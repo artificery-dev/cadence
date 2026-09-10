@@ -149,16 +149,56 @@ void main() {
       Future<ProcessResult> command({
         bool reverse = false,
         String? observedMount,
-      }) => Process.run(
-        executable ?? Platform.resolvedExecutable,
-        args(reverse: reverse, observedMount: observedMount),
-      );
+        bool check = false,
+      }) => Process.run(executable ?? Platform.resolvedExecutable, [
+        ...args(reverse: reverse, observedMount: observedMount),
+        if (check) ...['--check', 'true'],
+      ]);
+      Map finalEvent(ProcessResult result) => (result.stdout as String)
+          .split('\n')
+          .where((line) => line.startsWith('{'))
+          .map((line) => jsonDecode(line) as Map)
+          .last;
       expect(
         (await command()).exitCode,
         75,
         reason: 'Active source owner must reject relocation',
       );
       await host.close();
+      final beforeCheck = File(
+        '${home.path}/.cadence/library.sqlite',
+      ).readAsBytesSync();
+      final preview = await command(check: true);
+      expect(
+        preview.exitCode,
+        0,
+        reason: '${preview.stdout}\n${preview.stderr}',
+      );
+      expect(finalEvent(preview)['disposition'], 'empty-destination');
+      expect(
+        Directory('${card.path}/.cadence').existsSync(),
+        false,
+        reason: 'Preflight must not initialize the target',
+      );
+      expect(
+        File('${home.path}/.cadence/library.sqlite').readAsBytesSync(),
+        beforeCheck,
+      );
+      final other = openHost(true, initialize: true);
+      await other.open();
+      await other.close();
+      final existingPlan = await command(check: true);
+      expect(existingPlan.exitCode, 0, reason: '${existingPlan.stdout}');
+      expect(finalEvent(existingPlan)['canUseExisting'], true);
+      final rejected = await command();
+      expect(rejected.exitCode, 75);
+      expect(finalEvent(rejected)['cancelSafe'], true);
+      expect(finalEvent(rejected)['retryWithSameOperationId'], false);
+      expect(
+        File('${home.path}/.cadence/library.sqlite').readAsBytesSync(),
+        beforeCheck,
+      );
+      Directory('${card.path}/.cadence').deleteSync(recursive: true);
       expect((await command(observedMount: 'wrong')).exitCode, 75);
       expect(
         Directory('${card.path}/.cadence').existsSync(),
@@ -189,6 +229,8 @@ void main() {
           });
       expect(await interrupted.exitCode, isNot(0));
       expect(killed, true, reason: '$log');
+      final pendingCheck = await command(check: true);
+      expect(finalEvent(pendingCheck)['cancelSafe'], false);
       final blocked = openHost(false);
       await expectLater(
         blocked.open(),
