@@ -15,12 +15,14 @@ class MediaHost implements MediaEndpoint {
     this.service,
     this.availability,
     this.cacheDirectory,
+    this.cacheFileSystem,
     this.policy,
     this.watchAvailable,
     this.nativeAvailable,
   );
   static final _owners = Expando<bool>();
   final String? cacheDirectory;
+  final FileSystem cacheFileSystem;
   final ScanPolicy policy;
   bool _requireRootAvailability = false;
   bool Function(String path)? rootAccessAvailable;
@@ -51,6 +53,7 @@ class MediaHost implements MediaEndpoint {
     required MediaDatabase database,
     required FileSystem fileSystem,
     String? cacheDirectory,
+    FileSystem? cacheFileSystem,
     bool nativeAvailable = false,
     bool autoStartJobs = true,
     bool requireRootAvailability = false,
@@ -102,6 +105,7 @@ class MediaHost implements MediaEndpoint {
         service,
         availability,
         cacheDirectory,
+        cacheFileSystem ?? fileSystem,
         policy,
         watch != null,
         nativeAvailable,
@@ -459,28 +463,30 @@ class MediaHost implements MediaEndpoint {
   }
 
   @override
-  Future<List<int>?> artwork(int fileId) async =>
-      withMediaFileSystem(fileSystem, () async {
-        final row = await service.artwork(fileId);
-        if (row == null) return null;
-        final cache = cacheDirectory;
-        if (cache == null) return row.data;
-        final key = sha256.convert(row.data).toString();
-        final file = fileSystem.file(fileSystem.path.join(cache, key));
-        if (!await file.exists()) {
-          await file.parent.create(recursive: true);
-          final temp = fileSystem.file(
-            '${file.path}.$epoch.${++_cacheSequence}.tmp',
-          );
-          try {
-            await temp.writeAsBytes(row.data, flush: true);
-            await temp.rename(file.path);
-          } finally {
-            if (await temp.exists()) await temp.delete();
-          }
+  Future<List<int>?> artwork(int fileId) async => withMediaFileSystem(
+    fileSystem,
+    () async {
+      final row = await service.artwork(fileId);
+      if (row == null) return null;
+      final cache = cacheDirectory;
+      if (cache == null) return row.data;
+      final key = sha256.convert(row.data).toString();
+      final file = cacheFileSystem.file(cacheFileSystem.path.join(cache, key));
+      if (!await file.exists()) {
+        await file.parent.create(recursive: true);
+        final temp = cacheFileSystem.file(
+          '${file.path}.$epoch.${++_cacheSequence}.tmp',
+        );
+        try {
+          await temp.writeAsBytes(row.data, flush: true);
+          await temp.rename(file.path);
+        } finally {
+          if (await temp.exists()) await temp.delete();
         }
-        return file.readAsBytes();
-      });
+      }
+      return file.readAsBytes();
+    },
+  );
   @override
   Future<void> close() async {
     if (_closed) return;

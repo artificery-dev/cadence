@@ -25,6 +25,13 @@ abstract interface class VolumeAttachment {
   void release();
 }
 
+/// The same relative-path datastore may live on a removable mount or in an
+/// existing host directory (for example a user's home). Availability policy is
+/// a platform concern; both use /.cadence and volume-relative POSIX media paths.
+abstract interface class RootedStoreAttachment implements VolumeAttachment {
+  bool get removable;
+}
+
 /// Optional local-player adapter. Returned paths are valid only while the
 /// attachment generation is current; the player must close them before eject.
 abstract interface class LocalPlaybackVolume {
@@ -37,6 +44,18 @@ abstract interface class LocalStoreAttachment implements VolumeAttachment {
   bool get databaseExists;
   String get cacheDirectory;
   sql.Database openDatabase();
+}
+
+/// Metadata storage is independent of the media filesystem's synthetic `/`.
+/// Media paths retain the same meaning when metadata moves between home and SD.
+abstract interface class RelativeMediaStoreAttachment
+    implements LocalStoreAttachment {
+  FileSystem get cacheFileSystem;
+  String get declaredMediaRoot;
+  String? get mediaMount;
+  bool get removableMetadata;
+  String get resolvedMediaRoot;
+  void initializeConfiguration(sql.Database db);
 }
 
 typedef AttachVolume =
@@ -60,6 +79,7 @@ class ManagedLibraryHost implements MediaEndpoint {
   final LibraryWatchService Function(ScanCoordinator)? watch;
   bool _rootAvailabilityReady = true;
   String _storageKind = 'portable';
+  String _pathStyle = 'volume-posix';
   List<RootObservation> _roots = [];
   bool _checkingRoots = false;
   final bool initialize;
@@ -132,7 +152,12 @@ class ManagedLibraryHost implements MediaEndpoint {
               .every((r) => !r.available))
             mount,
     ],
-    'pathStyle': _storageKind == 'portable' ? 'volume-posix' : 'host-absolute',
+    'pathStyle': _pathStyle,
+    if (_attachment case final RelativeMediaStoreAttachment store) ...{
+      'mediaRoot': store.declaredMediaRoot,
+      'mediaMount': store.mediaMount,
+      'resolvedMediaRoot': store.resolvedMediaRoot,
+    },
     'readyToUnmount': _state == 'detached',
     'scope': 'cadenced',
     if (_error != null) 'error': _error,
@@ -174,13 +199,30 @@ class ManagedLibraryHost implements MediaEndpoint {
       if (!attachment.isAttached) throw StateError('Volume is unavailable');
       final fs = attachment.fileSystem;
       final local = attachment is LocalStoreAttachment ? attachment : null;
-      _storageKind = local == null ? 'portable' : 'local';
+      final relative = attachment is RelativeMediaStoreAttachment
+          ? attachment
+          : null;
+      if (relative != null && !hostRootAvailability) {
+        throw StateError(
+          'Declared media stores require host root availability',
+        );
+      }
+      _storageKind =
+          local != null ||
+              attachment is RootedStoreAttachment && !attachment.removable
+          ? 'local'
+          : 'portable';
+      _pathStyle = local == null ? 'volume-posix' : 'host-absolute';
+      if (relative != null) {
+        _storageKind = relative.removableMetadata ? 'portable' : 'local';
+        _pathStyle = 'volume-posix';
+      }
       _rootAvailabilityReady = !hostRootAvailability;
       final stored = fs.file('/.cadence/library.sqlite');
       final exists =
           local?.databaseExists ??
           (stored.existsSync() && stored.lengthSync() > 0);
-      if (!exists && !allowInitialize && local == null)
+      if (!exists && !allowInitialize && (local == null || relative != null))
         throw StateError(
           'Uninitialized volume; explicit initialization required',
         );
@@ -232,6 +274,7 @@ class ManagedLibraryHost implements MediaEndpoint {
           'CREATE TABLE cadence_volume (id TEXT PRIMARY KEY, format_version INTEGER NOT NULL)',
         );
         connection.execute('INSERT INTO cadence_volume VALUES (?, 1)', [id]);
+        relative?.initializeConfiguration(connection);
         connection.execute('COMMIT');
       }
       final rows = connection.select(
@@ -251,6 +294,7 @@ class ManagedLibraryHost implements MediaEndpoint {
           database: database,
           fileSystem: fs,
           cacheDirectory: local?.cacheDirectory ?? '/.cadence/cache',
+          cacheFileSystem: relative?.cacheFileSystem,
           requireRootAvailability: hostRootAvailability,
           watch: watch,
           policy: policy,
@@ -612,9 +656,7 @@ class ManagedLibraryHost implements MediaEndpoint {
         'managedStore': true,
         'hostRootAvailability': hostRootAvailability,
         'volumeFormatVersion': 1,
-        'pathStyle': _storageKind == 'portable'
-            ? 'volume-posix'
-            : 'host-absolute',
+        'pathStyle': _pathStyle,
         'eventRecovery': 'snapshot-and-query',
         'localPlayback': true,
         'watch': false,
@@ -677,8 +719,7 @@ class ManagedLibraryHost implements MediaEndpoint {
         if (mount != null &&
             (mount is! String ||
                 !host.fileSystem.path.isAbsolute(mount) ||
-                !(row.path == mount ||
-                    host.fileSystem.path.isWithin(mount, row.path))))
+                !_mountContains(row.path, mount)))
           throw MediaError(
             'invalid_request',
             'mountPath must contain its configured root',
@@ -811,7 +852,7 @@ class ManagedLibraryHost implements MediaEndpoint {
         'path': (attachment as LocalPlaybackVolume).playbackPath(path),
       };
     }
-    if (_storageKind == 'portable' &&
+    if (_pathStyle == 'volume-posix' &&
         method == 'post' &&
         Uri.parse(path).pathSegments.lastOrNull == 'roots') {
       final root = body?['path'];
@@ -843,13 +884,16 @@ class ManagedLibraryHost implements MediaEndpoint {
         parts.length == 3 &&
         parts[2] == 'roots') {
       final rootPath = body?['path'];
-      final mount = body?['mountPath'];
+      final mount =
+          body?['mountPath'] ??
+          (_attachment is RelativeMediaStoreAttachment
+              ? (_attachment as RelativeMediaStoreAttachment).mediaMount
+              : null);
       if (mount != null &&
           (mount is! String ||
               rootPath is! String ||
               !host.fileSystem.path.isAbsolute(mount) ||
-              !(rootPath == mount ||
-                  host.fileSystem.path.isWithin(mount, rootPath))))
+              !_mountContains(rootPath, mount)))
         throw MediaError(
           'invalid_request',
           'mountPath must contain its root',
@@ -902,9 +946,7 @@ class ManagedLibraryHost implements MediaEndpoint {
         'hostRootAvailability': hostRootAvailability,
         'localPlayback': _attachment is LocalPlaybackVolume,
         'volumeFormatVersion': 1,
-        'pathStyle': _storageKind == 'portable'
-            ? 'volume-posix'
-            : 'host-absolute',
+        'pathStyle': _pathStyle,
       };
     return result;
   }
@@ -933,6 +975,13 @@ class ManagedLibraryHost implements MediaEndpoint {
         _emit({'type': 'volume-activity', ...status});
       }
     });
+  }
+
+  bool _mountContains(String root, String mount) {
+    final attachment = _attachment;
+    if (attachment is RelativeMediaStoreAttachment)
+      return attachment.mediaMount == mount;
+    return root == mount || _host!.fileSystem.path.isWithin(mount, root);
   }
 
   @override

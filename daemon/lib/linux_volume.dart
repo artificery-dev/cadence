@@ -12,16 +12,20 @@ import 'package:cadence_media/src/filesystem.dart' show LocalMediaFiles;
 /// Linux mount lease. Directory descriptors pin the actual mount even after a
 /// lazy unmount; subsequent opens cannot fall through to the mount directory.
 /// Requires an existing mountpoint, never creates one. No subprocess required.
-class LinuxVolumeAttachment implements VolumeAttachment, LocalPlaybackVolume {
+class LinuxVolumeAttachment
+    implements RootedStoreAttachment, LocalPlaybackVolume {
   LinuxVolumeAttachment._(
     this._rootFd,
     this._metadataFd,
     this._lockFd,
     this.mountPath,
     this.mountId,
+    this.removable,
   ) : fileSystem = _LinuxVolumeFileSystem('/proc/self/fd/$_rootFd');
   final int _rootFd, _metadataFd, _lockFd;
   final String mountPath, mountId;
+  @override
+  final bool removable;
   bool _released = false;
   @override
   final FileSystem fileSystem;
@@ -72,7 +76,24 @@ class LinuxVolumeAttachment implements VolumeAttachment, LocalPlaybackVolume {
             fields[0] == id &&
             _unescape(fields[4]) == path;
       });
-  static LinuxVolumeAttachment acquire(String path, {bool initialize = false}) {
+  static LinuxVolumeAttachment acquire(
+    String path, {
+    bool initialize = false,
+  }) => _acquire(path, initialize: initialize, requireMount: true);
+
+  /// Pins an existing directory, never creates the root. This is appropriate
+  /// for a home-rooted datastore, not for an SD mountpoint: callers must use
+  /// [acquire] for removable storage so an uncovered mount cannot be initialized.
+  static LinuxVolumeAttachment acquireDirectory(
+    String path, {
+    bool initialize = false,
+  }) => _acquire(path, initialize: initialize, requireMount: false);
+
+  static LinuxVolumeAttachment _acquire(
+    String path, {
+    required bool initialize,
+    required bool requireMount,
+  }) {
     if (!io.Platform.isLinux)
       throw UnsupportedError('Linux mount adapter required');
     final canonical = io.Directory(path).resolveSymbolicLinksSync();
@@ -86,7 +107,7 @@ class LinuxVolumeAttachment implements VolumeAttachment, LocalPlaybackVolume {
           .split(':')
           .last
           .trim();
-      if (!_mounted(canonical, id))
+      if (requireMount && !_mounted(canonical, id))
         throw StateError('Volume path must be an attached mountpoint');
       if (initialize) {
         _string('.cadence', (p) => _mkdirat(root, p, 448));
@@ -106,9 +127,18 @@ class LinuxVolumeAttachment implements VolumeAttachment, LocalPlaybackVolume {
       );
       if (lock < 0 || _flock(lock, 2 | 4) != 0)
         throw StateError('Volume already owned or cannot be locked');
-      if (!_mounted(canonical, id))
+      if ((requireMount && !_mounted(canonical, id)) ||
+          io.Directory('/proc/self/fd/$root').resolveSymbolicLinksSync() !=
+              canonical)
         throw StateError('Volume detached during attachment');
-      return LinuxVolumeAttachment._(root, metadata, lock, canonical, id);
+      return LinuxVolumeAttachment._(
+        root,
+        metadata,
+        lock,
+        canonical,
+        id,
+        requireMount,
+      );
     } catch (_) {
       if (lock >= 0) _close(lock);
       if (metadata >= 0) _close(metadata);
@@ -121,7 +151,10 @@ class LinuxVolumeAttachment implements VolumeAttachment, LocalPlaybackVolume {
   bool get isAttached {
     if (_released) return false;
     try {
-      if (!_mounted(mountPath, mountId)) return false;
+      if ((removable && !_mounted(mountPath, mountId)) ||
+          io.Directory('/proc/self/fd/$_rootFd').resolveSymbolicLinksSync() !=
+              mountPath)
+        return false;
       final current = _string(mountPath, (p) => _open(p, _directory, 0));
       if (current < 0) return false;
       try {
@@ -193,6 +226,13 @@ class LinuxRootLease implements RootLease {
   @override
   final FileSystem fileSystem;
   static LinuxRootLease acquire(String path, String expectedId) {
+    return _acquire(path, expectedId);
+  }
+
+  /// Host-declared non-removable media base; never use for an SD mountpoint.
+  static LinuxRootLease acquireDirectory(String path) => _acquire(path, null);
+
+  static LinuxRootLease _acquire(String path, String? expectedId) {
     final canonical = io.Directory(path).resolveSymbolicLinksSync();
     final fd = LinuxVolumeAttachment._string(
       canonical,
@@ -210,7 +250,8 @@ class LinuxRootLease implements RootLease {
           .split(':')
           .last
           .trim();
-      if (id != expectedId || !LinuxVolumeAttachment._mounted(canonical, id))
+      if (expectedId != null &&
+          (id != expectedId || !LinuxVolumeAttachment._mounted(canonical, id)))
         throw StateError('Media mount identity changed');
       return LinuxRootLease._(fd, canonical, id);
     } catch (_) {
@@ -221,8 +262,14 @@ class LinuxRootLease implements RootLease {
 
   @override
   bool get available {
-    if (_closed || !LinuxVolumeAttachment._mounted(mountPath, mountId))
+    try {
+      if (_closed ||
+          io.Directory('/proc/self/fd/$fd').resolveSymbolicLinksSync() !=
+              mountPath)
+        return false;
+    } catch (_) {
       return false;
+    }
     final current = LinuxVolumeAttachment._string(
       mountPath,
       (p) => LinuxVolumeAttachment._open(

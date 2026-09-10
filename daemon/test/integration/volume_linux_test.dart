@@ -45,6 +45,179 @@ void main() {
     expect(result.exitCode, 0, reason: '${result.stderr}');
   }
 
+  test('directory store stays pinned when its home path is replaced', () {
+    final temp = Directory.systemTemp.createTempSync('cadence-home-pin-');
+    addTearDown(() => temp.deleteSync(recursive: true));
+    final home = Directory('${temp.path}/home')..createSync();
+    final lease = LinuxVolumeAttachment.acquireDirectory(
+      home.path,
+      initialize: true,
+    );
+    addTearDown(lease.release);
+    expect(lease.isAttached, true);
+    expect(lease.removable, false);
+    expect(
+      () => LinuxVolumeAttachment.acquireDirectory(home.path),
+      throwsStateError,
+    );
+    home.renameSync('${temp.path}/old-home');
+    home.createSync();
+    expect(lease.isAttached, false);
+    lease.fileSystem
+        .file('/.cadence/pinned')
+        .writeAsStringSync('original home');
+    expect(
+      File('${temp.path}/old-home/.cadence/pinned').readAsStringSync(),
+      'original home',
+    );
+    expect(home.listSync(), isEmpty);
+    expect(
+      () => LinuxVolumeAttachment.acquireDirectory(
+        '${temp.path}/missing',
+        initialize: true,
+      ),
+      throwsA(isA<FileSystemException>()),
+    );
+    expect(Directory('${temp.path}/missing').existsSync(), false);
+  });
+
+  test(
+    'declared media base is independent of metadata location in standalone hosting',
+    () async {
+      final temp = Directory.systemTemp.createTempSync('cadence-declared-');
+      addTearDown(() => temp.deleteSync(recursive: true));
+      final card = Directory('${temp.path}/card')..createSync();
+      final mount = Directory('${temp.path}/mount')..createSync();
+      Directory('${card.path}/Music').createSync();
+      File(
+        '../packages/media/test/fixtures/audio/tagged.flac',
+      ).copySync('${card.path}/Music/song.flac');
+      await command('mount', ['--bind', card.path, mount.path]);
+      final mountId = File('/proc/self/mountinfo')
+          .readAsLinesSync()
+          .map((l) => l.split(' '))
+          .firstWhere((parts) => parts[4] == mount.path)[0];
+      addTearDown(() async {
+        await Process.run('umount', ['--lazy', mount.path]);
+      });
+      for (final mode in ['internal-card', 'portable-card', 'internal-home']) {
+        final home = Directory('${temp.path}/$mode')..createSync();
+        final portable = mode == 'portable-card';
+        final homeMedia = mode == 'internal-home';
+        if (homeMedia) {
+          Directory('${home.path}/Music').createSync();
+          File(
+            '${card.path}/Music/song.flac',
+          ).copySync('${home.path}/Music/song.flac');
+        }
+        final root = portable ? mount.path : home.path;
+        final socket = '${temp.path}/$mode.sock';
+        final executable = Platform.environment['CADENCE_VOLUME_EXECUTABLE'];
+        final process = await Process.start(
+          executable ?? Platform.resolvedExecutable,
+          [
+            if (executable == null) ...['run', 'bin/cadenced.dart'],
+            '--store',
+            '$root/.cadence',
+            '--store-kind',
+            portable ? 'mount' : 'directory',
+            '--media-root',
+            portable || homeMedia ? '.' : mount.path,
+            if (!homeMedia) ...['--media-mount', mount.path],
+            '--initialize',
+            'true',
+            '--socket',
+            socket,
+            '--native',
+            'true',
+          ],
+        );
+        addTearDown(() async {
+          process.kill();
+          await process.exitCode;
+        });
+        final output = StringBuffer();
+        process.stderr.transform(utf8.decoder).listen(output.write);
+        final ready = Completer<void>();
+        process.stdout
+            .transform(utf8.decoder)
+            .transform(const LineSplitter())
+            .listen((line) {
+              output.writeln(line);
+              if (line.contains('"event":"ready"') && !ready.isCompleted)
+                ready.complete();
+            });
+        await ready.future.timeout(const Duration(seconds: 60));
+        final client = CadenceClient(UnixMediaTransport(socket));
+        final status = await client.volume();
+        expect(status['state'], 'attached', reason: '$output');
+        expect(status['storageKind'], portable ? 'portable' : 'local');
+        expect(status['pathStyle'], 'volume-posix');
+        expect(status['resolvedMediaRoot'], homeMedia ? home.path : mount.path);
+        expect(status['rootAvailabilityReady'], false);
+        final library = await client.call('post', '/libraries', {
+          'name': 'Music',
+          'type': 'music',
+        });
+        final id = library['id'] as int;
+        final mediaRoot = await client.addRoot(id, '/Music');
+        final current = await client.volumeStatus();
+        final observed = await client.setRootAvailability(
+          expectedId: current.id!,
+          expectedGeneration: current.generation!,
+          roots: [
+            RootAvailability(
+              rootId: mediaRoot,
+              available: true,
+              mountId: homeMedia ? null : mountId,
+              sourceId: homeMedia ? null : 'card-A',
+            ),
+          ],
+        );
+        final jobs = (await client.snapshot())['jobs'] as List;
+        expect(
+          (await settle(
+            client,
+            (jobs.single as Map)['jobId'] as String,
+          ))['state'],
+          'done',
+        );
+        final item = (await client.items(id)).single as Map;
+        expect(item['path'], '/Music/song.flac');
+        expect((item['metadata'] as Map)['title'], 'Lossless Bloom');
+        final resolved = await client.resolveMedia(
+          libraryUuid: library['uuid'] as String,
+          itemId: item['id'] as int,
+          volumeId: observed.id!,
+          generation: observed.generation!,
+        );
+        expect(
+          File(resolved.path).readAsBytesSync(),
+          File('${card.path}/Music/song.flac').readAsBytesSync(),
+        );
+        final artwork = await client.artwork(item['fileId'] as int);
+        if (artwork != null) {
+          expect(Directory('$root/.cadence/cache').listSync(), isNotEmpty);
+        }
+        if (!homeMedia) {
+          final quiescent = await client.setRootAvailability(
+            expectedId: observed.id!,
+            expectedGeneration: observed.generation!,
+            roots: [RootAvailability(rootId: mediaRoot, available: false)],
+          );
+          expect(quiescent.quiescentMountPaths, [mount.path]);
+          expect(await client.items(id), hasLength(1));
+        }
+        expect((await client.ejectVolume())['readyToUnmount'], true);
+        await client.close();
+        process.kill(ProcessSignal.sigterm);
+        expect(await process.exitCode, 0, reason: '$output');
+      }
+      await command('umount', [mount.path]);
+    },
+    timeout: const Timeout(Duration(minutes: 2)),
+  );
+
   test(
     'lazy detach cannot redirect database, journal or cache writes into mountpoint',
     () async {

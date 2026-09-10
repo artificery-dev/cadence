@@ -11,6 +11,8 @@ import 'package:cadenced/priority.dart';
 import 'package:cadenced/volume.dart';
 import 'package:cadenced/linux_volume.dart';
 import 'package:cadenced/endpoint.dart';
+import 'package:cadenced/declared_store.dart';
+import 'package:path/path.dart' as p;
 
 void log(String event, [Map<String, Object?> data = const {}]) =>
     stdout.writeln(
@@ -38,11 +40,15 @@ Future<void> run(List<String> args) async {
           '--policy',
           '--native',
           '--volume',
+          '--store',
+          '--store-kind',
+          '--media-root',
+          '--media-mount',
           '--initialize',
           '--availability',
         ].contains(args[i])) {
       stderr.writeln(
-        'Usage: cadenced --socket PATH (--volume MOUNT [--initialize true|false] | --database PATH --cache DIR) [--policy lean|full] [--native true|false] [--availability filesystem|host]',
+        'Usage: cadenced --socket PATH (--store PATH/.cadence --store-kind directory|mount --media-root ROOT [--media-mount MOUNT] | --volume MOUNT | --database PATH --cache DIR) [--initialize true|false] [--policy lean|full] [--native true|false] [--availability filesystem|host]',
       );
       exitCode = 64;
       return;
@@ -50,21 +56,36 @@ Future<void> run(List<String> args) async {
     options[args[i]] = args[i + 1];
   }
   final portable = options.containsKey('--volume');
+  final declared = options.containsKey('--store');
+  final rooted = portable || declared;
   if (!options.containsKey('--socket') ||
-      (portable
+      (portable && declared) ||
+      (rooted
           ? options.containsKey('--database') || options.containsKey('--cache')
           : !['--database', '--cache'].every(options.containsKey)) ||
-      (!portable && options.containsKey('--initialize')) ||
+      (!rooted && options.containsKey('--initialize')) ||
       !['true', 'false'].contains(options['--initialize'] ?? 'false') ||
       ![
         'filesystem',
         'host',
       ].contains(options['--availability'] ?? 'filesystem') ||
       (portable && options['--availability'] == 'host') ||
+      (declared &&
+          options.containsKey('--availability') &&
+          options['--availability'] != 'host') ||
+      (declared &&
+          (!['directory', 'mount'].contains(options['--store-kind']) ||
+              options['--media-root'] == null)) ||
+      (!declared &&
+          [
+            '--store-kind',
+            '--media-root',
+            '--media-mount',
+          ].any(options.containsKey)) ||
       !['lean', 'full'].contains(options['--policy'] ?? 'lean') ||
       !['true', 'false'].contains(options['--native'] ?? 'false')) {
     stderr.writeln(
-      'Required: --database PATH --cache DIR --socket PATH; policy is lean or full',
+      'Choose --store with --store-kind and --media-root, --volume MOUNT, or --database PATH --cache DIR; --socket is required. Declared stores require host availability.',
     );
     exitCode = 64;
     return;
@@ -82,12 +103,61 @@ Future<void> run(List<String> args) async {
         : null;
     if (options['--native'] == 'true' && probe == null)
       throw StateError('Requested native probe could not load');
-    final hostAvailability = options['--availability'] == 'host';
+    final hostAvailability = declared || options['--availability'] == 'host';
+    final storePath = options['--store'];
+    final declaration = options['--media-root'];
+    final mediaMount = options['--media-mount'];
+    String? resolvedMediaRoot;
+    if (declared) {
+      if (!p.isAbsolute(storePath!) ||
+          p.normalize(storePath) != storePath ||
+          p.basename(storePath) != '.cadence')
+        throw ArgumentError('--store must be an absolute .cadence directory');
+      if (declaration != '.' &&
+          (!p.isAbsolute(declaration!) ||
+              p.normalize(declaration) != declaration))
+        throw ArgumentError(
+          '--media-root must be . or a canonical absolute directory',
+        );
+      resolvedMediaRoot = declaration == '.'
+          ? p.dirname(storePath)
+          : declaration;
+      if (mediaMount != null &&
+          (!p.isAbsolute(mediaMount) ||
+              p.normalize(mediaMount) != mediaMount ||
+              !(resolvedMediaRoot == mediaMount ||
+                  p.isWithin(mediaMount, resolvedMediaRoot!))))
+        throw ArgumentError(
+          '--media-mount must contain the declared media root',
+        );
+      if (options['--store-kind'] == 'mount' && mediaMount == null)
+        throw ArgumentError('Removable stores require --media-mount');
+    }
     final managed = ManagedLibraryHost(
       attach: ({required initialize}) async => portable
           ? LinuxVolumeAttachment.acquire(
               options['--volume']!,
               initialize: initialize,
+            )
+          : declared
+          ? DeclaredMediaStore(
+              metadata: options['--store-kind'] == 'mount'
+                  ? LinuxVolumeAttachment.acquire(
+                      p.dirname(storePath!),
+                      initialize: initialize,
+                    )
+                  : LinuxVolumeAttachment.acquireDirectory(
+                      p.dirname(storePath!),
+                      initialize: initialize,
+                    ),
+              declaredMediaRoot: declaration!,
+              resolvedMediaRoot: resolvedMediaRoot!,
+              mediaMount: mediaMount,
+              acquireMediaRoot: (mountId) => mediaMount == null
+                  ? LinuxRootLease.acquireDirectory(resolvedMediaRoot!)
+                  : LinuxRootLease.acquire(mediaMount, mountId!),
+              playerPath: (path) =>
+                  path.replaceFirst('/proc/self/', '/proc/$pid/'),
             )
           : LinuxLocalStore.acquire(
               options['--database']!,
@@ -96,14 +166,14 @@ Future<void> run(List<String> args) async {
             ),
       initialize: options['--initialize'] == 'true',
       hostRootAvailability: hostAvailability,
-      reconcileOnAttach: portable || hostAvailability,
+      reconcileOnAttach: rooted || hostAvailability,
       nativeAvailable: probe != null,
       policy: options['--policy'] == 'full'
           ? ScanPolicy.full
           : const ScanPolicy(artwork: ArtworkPolicy.deferred),
       buildExtractor: () =>
           MediaExtractor([...defaultMediaExtractor().tiers, ?probe]),
-      watch: portable || hostAvailability
+      watch: rooted || hostAvailability
           ? null
           : (coordinator) => LocalLibraryWatchService(
               coordinator.db,
@@ -123,7 +193,7 @@ Future<void> run(List<String> args) async {
     try {
       await managed.open();
     } catch (e) {
-      if (!portable) rethrow;
+      if (!rooted) rethrow;
       log('volume-unavailable', {'message': '$e'});
     }
     server = await UnixMediaServer.bind(host, options['--socket']!);
