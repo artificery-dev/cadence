@@ -72,7 +72,7 @@ void main() {
   test(
     'card relocation retains library UUID, media IDs, metadata and full hash',
     () async {
-      var host = PortableVolumeHost(
+      var host = ManagedLibraryHost(
         reconcileOnAttach: false,
         attach: attach,
         initialize: true,
@@ -110,7 +110,7 @@ void main() {
       fs.directory('/player-two').createSync();
       fs.directory(mount).renameSync('/player-two/sd');
       mount = '/player-two/sd';
-      host = PortableVolumeHost(reconcileOnAttach: false, attach: attach);
+      host = ManagedLibraryHost(reconcileOnAttach: false, attach: attach);
       await host.open();
       addTearDown(host.close);
       client = CadenceClient(host);
@@ -139,7 +139,7 @@ void main() {
     () async {
       final gate = Completer<void>();
       final tier = EnteredTier(gate.future);
-      final host = PortableVolumeHost(
+      final host = ManagedLibraryHost(
         reconcileOnAttach: false,
         attach: attach,
         initialize: true,
@@ -198,7 +198,7 @@ void main() {
   test(
     'loss rejects clients, preserves records and requires explicit reattach',
     () async {
-      final host = PortableVolumeHost(
+      final host = ManagedLibraryHost(
         reconcileOnAttach: false,
         attach: attach,
         initialize: true,
@@ -222,20 +222,20 @@ void main() {
   test(
     'initialization is explicit, exclusive and rejects wrong volume identity',
     () async {
-      final uninitialized = PortableVolumeHost(
+      final uninitialized = ManagedLibraryHost(
         reconcileOnAttach: false,
         attach: attach,
       );
       await expectLater(uninitialized.open(), throwsStateError);
       await uninitialized.close();
-      final host = PortableVolumeHost(
+      final host = ManagedLibraryHost(
         reconcileOnAttach: false,
         attach: attach,
         initialize: true,
       );
       await host.open();
       addTearDown(host.close);
-      final other = PortableVolumeHost(
+      final other = ManagedLibraryHost(
         reconcileOnAttach: false,
         attach: attach,
         initialize: true,
@@ -274,7 +274,7 @@ void main() {
     () async {
       final gate = Completer<void>();
       final tier = EnteredTier(gate.future);
-      final host = PortableVolumeHost(
+      final host = ManagedLibraryHost(
         attach: attach,
         initialize: true,
         reconcileOnAttach: false,
@@ -369,7 +369,7 @@ void main() {
   test(
     'flush failure never reports ready; explicit attach can recover',
     () async {
-      final host = PortableVolumeHost(attach: attach, initialize: true);
+      final host = ManagedLibraryHost(attach: attach, initialize: true);
       await host.open();
       addTearDown(host.close);
       card!.flushFails = true;

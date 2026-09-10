@@ -55,7 +55,7 @@ void main() {
       File('${source.path}/song.mp3').writeAsStringSync('song');
       await command('mount', ['--bind', source.path, mount.path]);
       final lease = LinuxVolumeAttachment.acquire(mount.path, initialize: true);
-      final host = PortableVolumeHost(
+      final host = ManagedLibraryHost(
         reconcileOnAttach: false,
         attach: ({required initialize}) async => lease,
         initialize: true,
@@ -97,7 +97,7 @@ void main() {
       );
       expect(mount.listSync(), isEmpty);
       await command('mount', ['--bind', source.path, mount.path]);
-      final reopened = PortableVolumeHost(
+      final reopened = ManagedLibraryHost(
         reconcileOnAttach: false,
         attach: ({required initialize}) async =>
             LinuxVolumeAttachment.acquire(mount.path),

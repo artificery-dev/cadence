@@ -200,17 +200,24 @@ class ManagedLibraryHost implements MediaEndpoint {
           vfs: vfs.name,
         );
       }
-      // This VFS deliberately has no shared-memory API. All temporary tables
-      // remain in memory, and every persistent write uses the volume lease.
-      connection.execute('PRAGMA journal_mode = DELETE');
-      connection.execute('PRAGMA synchronous = EXTRA');
-      connection.execute('PRAGMA temp_store = MEMORY');
       final hasIdentity = connection
           .select(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='cadence_volume'",
           )
           .isNotEmpty;
-      if (!exists || (local != null && !hasIdentity)) {
+      if (exists && !hasIdentity) {
+        throw MediaError(
+          'unsupported_datastore_format',
+          'Existing database is not a Cadence datastore',
+          409,
+        );
+      }
+      // This VFS deliberately has no shared-memory API. All temporary tables
+      // remain in memory, and every persistent write uses the volume lease.
+      connection.execute('PRAGMA journal_mode = DELETE');
+      connection.execute('PRAGMA synchronous = EXTRA');
+      connection.execute('PRAGMA temp_store = MEMORY');
+      if (!exists) {
         final random = Random.secure();
         final bytes = List<int>.generate(16, (_) => random.nextInt(256));
         bytes[6] = (bytes[6] & 15) | 64;
@@ -938,6 +945,3 @@ class ManagedLibraryHost implements MediaEndpoint {
     await _events.close();
   });
 }
-
-/// Compatibility name for embedders using the original portable constructor.
-typedef PortableVolumeHost = ManagedLibraryHost;

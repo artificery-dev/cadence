@@ -360,4 +360,43 @@ void main() {
       expect(await client.items(library), hasLength(2));
     },
   );
+  test(
+    'unrecognized existing databases are rejected without datastore adoption',
+    () async {
+      final vfs = VolumeVfs(
+        metadata,
+        name: 'unknown-store',
+        syncDirectory: () {},
+      );
+      sql.sqlite3.registerVirtualFileSystem(vfs);
+      final db = sql.sqlite3.open('/.cadence/library.sqlite', vfs: vfs.name);
+      db.execute('CREATE TABLE other_application (value TEXT)');
+      db.execute("INSERT INTO other_application VALUES ('keep')");
+      db.close();
+      sql.sqlite3.unregisterVirtualFileSystem(vfs);
+      final before = metadata
+          .file('/.cadence/library.sqlite')
+          .readAsBytesSync();
+      final host = ManagedLibraryHost(
+        attach: attach,
+        hostRootAvailability: true,
+      );
+      await expectLater(
+        host.open(),
+        throwsA(
+          isA<MediaError>().having(
+            (e) => e.code,
+            'code',
+            'unsupported_datastore_format',
+          ),
+        ),
+      );
+      await host.close();
+      expect(owned, false);
+      expect(
+        metadata.file('/.cadence/library.sqlite').readAsBytesSync(),
+        before,
+      );
+    },
+  );
 }

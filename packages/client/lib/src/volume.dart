@@ -5,14 +5,13 @@ class VolumeStatus {
     : id = json['id'] as String?,
       generation = json['generation'] as String?,
       state = json['state'] as String,
-      storageKind = json['storageKind'] as String? ?? 'portable',
-      rootAvailabilityReady = json['rootAvailabilityReady'] != false,
-      quiescentRootIds = (json['quiescentRootIds'] as List? ?? const [])
-          .cast<int>(),
-      quiescentMountPaths = (json['quiescentMountPaths'] as List? ?? const [])
+      storageKind = json['storageKind'] as String,
+      rootAvailabilityReady = json['rootAvailabilityReady'] as bool,
+      quiescentRootIds = (json['quiescentRootIds'] as List).cast<int>(),
+      quiescentMountPaths = (json['quiescentMountPaths'] as List)
           .cast<String>(),
-      readyToUnmount = json['readyToUnmount'] == true,
-      activity = (json['activity'] as Map? ?? const {}).cast<String, Object?>(),
+      readyToUnmount = json['readyToUnmount'] as bool,
+      activity = (json['activity'] as Map).cast<String, Object?>(),
       error = json['error'] as String?;
   final String? id, generation, error;
   final String state, storageKind;
