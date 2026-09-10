@@ -84,10 +84,12 @@ ENV PATH=/opt/dart-sdk/bin:$PATH
 # because the registry the image is pushed to refuses larger blobs: a
 # shallow clone of the tag (the release tarball drags 300 MB of history
 # along), the tool's own bootstrap (its Dart SDK and snapshot), and the
-# Linux engine artifacts alone — no Android, iOS or web downloads. Each
-# layer makes what it created world-writable in the same step (a later
-# chmod would copy every file into a new layer): run.sh executes as the
-# calling user and Flutter writes stamps and locks into its own tree. The
+# Linux engine artifacts alone — no Android, iOS or web downloads, and the
+# fetched archives dropped. Each layer makes what it created world-writable
+# in the same step, touching only files that are not yet (a chmod of an
+# earlier layer's file would copy it into the new layer): run.sh executes
+# as the calling user, and Flutter writes stamps, locks and package
+# resolutions into its own tree. The
 # safe.directory entry keeps git from refusing a tree owned by someone
 # else.
 # Two layers here as well: the compilers, then the libraries.
@@ -106,14 +108,15 @@ RUN flutter config --no-analytics --enable-linux-desktop \
         --no-enable-android --no-enable-ios --no-enable-web \
         --no-enable-macos-desktop --no-enable-windows-desktop \
     && flutter --version \
-    && chmod -R a+rwX /opt/flutter/bin/cache
+    && find /opt/flutter -not -perm -o=w -exec chmod a+rwX {} +
 # Flutter unpacks its downloads with tar, which under a rootless build
 # cannot hand files to owners outside the user namespace; the option tells
 # it not to try. Real root (kaniko in CI) is unaffected.
 RUN TAR_OPTIONS=--no-same-owner flutter precache --linux --no-android --no-ios --no-web \
         --no-macos --no-windows --no-fuchsia \
     && rm -rf /opt/flutter/bin/cache/artifacts/engine/android-* \
-    && chmod -R a+rwX /opt/flutter/bin/cache/artifacts \
+           /opt/flutter/bin/cache/downloads \
+    && find /opt/flutter -not -perm -o=w -exec chmod a+rwX {} + \
     && du -sh /opt/flutter /opt/flutter/bin/cache
 
 # --- node -------------------------------------------------------------------

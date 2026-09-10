@@ -4,3 +4,7 @@
 analyzer:
   exclude:
     - app/**
+    # Build output, including the toolchain container's own copy of the
+    # app's package resolution (build/container), which is Dart the
+    # workspace must not analyze.
+    - build/**
