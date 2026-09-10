@@ -14,10 +14,12 @@
 # supported way is an Authorized Integration: the workflow requests a
 # short-lived JWT (enable-openid-connect) and the registry accepts it as a
 # Basic-auth password. One-time setup by the integration's owner:
-#   1. Settings > Authorized Integrations > New, type "Forgejo Actions
-#      (Local)", source repository this repo, workflow file ci.yml,
-#      capabilities read:package and write:package.
-#   2. Store its audience (not secret) as the repository variable
+#   1. User settings > Authorized Integrations > Add authorized integration
+#      > Forgejo Actions (Local): select this repository, workflow file
+#      `ci.yml`, git reference empty (ci, main, tags and PRs all build),
+#      access "All (public, private, and limited)" with every permission
+#      "No access" except package = "Read and write".
+#   2. Store the audience it shows (not secret) as the repository variable
 #      CADENCE_REGISTRY_AUDIENCE, e.g. `fj actions variables create
 #      CADENCE_REGISTRY_AUDIENCE u:1:...`.
 # Alternatively the CI_FORGEJO_REGISTRY_USERNAME / CI_FORGEJO_REGISTRY_TOKEN

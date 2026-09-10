@@ -96,11 +96,14 @@ therefore uses an Authorized Integration: with `enable-openid-connect: true`
 it requests a short-lived JWT that the container registry accepts as a
 Basic-auth password. One-time setup by the integration's owner:
 
-1. Forgejo Settings > Authorized Integrations > New: type "Forgejo Actions
-   (Local)", source repository `artificery/cadence`, workflow file `ci.yml`,
-   capabilities `read:package` and `write:package`.
-2. Store its audience, which is not secret, as the repository variable
-   `CADENCE_REGISTRY_AUDIENCE` (`fj actions variables create
+1. User settings > Authorized Integrations > Add authorized integration >
+   Forgejo Actions (Local). Select the repository `artificery/cadence`, set
+   the workflow file to `ci.yml`, leave the git reference and events empty
+   so `ci`, `main`, tags and pull requests all qualify, choose "All (public,
+   private, and limited)" for repository and organization access, and grant
+   only `package` = "Read and write".
+2. Store the audience it shows, which is not secret, as the repository
+   variable `CADENCE_REGISTRY_AUDIENCE` (`fj actions variables create
    CADENCE_REGISTRY_AUDIENCE u:1:...`).
 
 The `CI_FORGEJO_REGISTRY_USERNAME` / `CI_FORGEJO_REGISTRY_TOKEN` secrets (an
