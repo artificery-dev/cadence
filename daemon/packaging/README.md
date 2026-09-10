@@ -74,7 +74,13 @@ and fails if the tag and pubspec disagree; every other build is
 
 ## Continuous integration
 
-`.forgejo/workflows/ci.yml` runs on the `linux-amd64-container` runners,
+`.forgejo/workflows/ci.yml` runs on pushes to `main` and `ci`, on pull
+requests, on `v*` tags and on manual dispatch. The `ci` branch is for trying
+the pipeline without touching `main` (which is mirrored publicly): pushes to
+it run everything short of the release, and a manual dispatch from it
+publishes a disposable prerelease at the moving tag `ci-test`.
+
+The jobs run on the `linux-amd64-container` runners,
 which execute every job inside a container with no docker socket and no
 privileges. The first job computes the toolchain digest (`toolchain/digest.sh`, the
 same formula `toolchain/run.sh` uses) and asks the instance's container registry

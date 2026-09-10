@@ -10,11 +10,17 @@
 # tag and skip straight to using it. Registry credentials default to the workflow token and can be
 # overridden with the CI_FORGEJO_REGISTRY_USERNAME / CI_FORGEJO_REGISTRY_TOKEN
 # secrets if the instance does not grant package access to workflow tokens.
+#
+# The `ci` branch exists to exercise this file without touching main (main
+# is mirrored publicly): pushes to it run every job short of the release,
+# and a manual dispatch from it publishes a disposable prerelease tagged
+# `ci-test` so the release path can be tried end to end. Real releases come
+# from `v*` tags, whose version must match daemon/pubspec.yaml.
 name: CI
 
 "on":
   push:
-    branches: ['**']
+    branches: [main, ci]
     tags: ['v*']
   pull_request:
   workflow_dispatch:
@@ -201,9 +207,16 @@ jobs:
   release:
     name: Publish release
     needs: [check, build]
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: >-
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
+      || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/ci')
     runs-on: linux-amd64-container
     timeout-minutes: 15
+    env:
+      # A tag push releases as itself; a dispatch from `ci` publishes a
+      # prerelease at the moving tag `ci-test`, replaced on every run.
+      RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'ci-test' }}
+      PRERELEASE: ${{ startsWith(github.ref, 'refs/tags/v') && 'false' || 'true' }}
     steps:
       - name: Collect packages
         uses: https://data.forgejo.org/forgejo/download-artifact@1314311ddb542af343a82d478ac786ceada4143a # v5
@@ -217,7 +230,10 @@ jobs:
           direction: upload
           url: ${{ github.server_url }}
           repo: ${{ github.repository }}
-          tag: ${{ github.ref_name }}
+          tag: ${{ env.RELEASE_TAG }}
+          sha: ${{ github.sha }}
+          prerelease: ${{ env.PRERELEASE }}
+          override: ${{ env.PRERELEASE }}
           token: ${{ secrets.GITHUB_TOKEN }}
           release-dir: release
-          release-notes: cadenced ${{ github.ref_name }} for amd64, arm64 and armhf, as bundle tarballs and Debian packages.
+          release-notes: cadenced ${{ env.RELEASE_TAG }} (${{ github.sha }}) for amd64, arm64 and armhf, as bundle tarballs and Debian packages.
