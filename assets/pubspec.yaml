@@ -1,0 +1,19 @@
+name: cadence_assets
+description: Shared Cadence artwork for the app and the platform builds.
+version: 0.9.1
+publish_to: none
+
+environment:
+  sdk: ^3.12.2
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+flutter:
+  assets:
+    - cadence/web/icon-512.png
+    - cadence/web/icon-192.png
+    - cadence/web/icon-maskable-512.png
+    - cadence/web/apple-touch-icon.png
+    - cadence/web/favicon.svg

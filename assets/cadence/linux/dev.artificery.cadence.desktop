@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Cadence
+GenericName=Media Player
+Comment=Your music, films, shows, books and pictures, in one library
+Exec=cadence %U
+Icon=dev.artificery.cadence
+Terminal=false
+Categories=AudioVideo;Audio;Video;Player;
+Keywords=music;player;video;library;media;
+StartupNotify=true
+StartupWMClass=dev.artificery.cadence

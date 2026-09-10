@@ -1,0 +1,47 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Cadence",
+      "request": "launch",
+      "type": "dart",
+      "cwd": "app",
+      "program": "lib/main.dart",
+      "toolArgs": [
+        "--no-enable-impeller",
+        "--dart-entrypoint-args=--portable-dir=${workspaceFolder}/storage"
+      ]
+    },
+    {
+      "name": "Cadence (profile)",
+      "request": "launch",
+      "type": "dart",
+      "cwd": "app",
+      "program": "lib/main.dart",
+      "flutterMode": "profile",
+      "toolArgs": [
+        "--no-enable-impeller",
+        "--dart-entrypoint-args=--portable-dir=${workspaceFolder}/storage"
+      ]
+    },
+    {
+      "name": "Cadence (release)",
+      "request": "launch",
+      "type": "dart",
+      "cwd": "app",
+      "program": "lib/main.dart",
+      "flutterMode": "release",
+      "toolArgs": [
+        "--no-enable-impeller",
+        "--dart-entrypoint-args=--portable-dir=${workspaceFolder}/storage"
+      ]
+    },
+    {
+      "name": "Tome UI playground",
+      "request": "launch",
+      "type": "dart",
+      "cwd": "packages/ui/playground",
+      "program": "lib/main.dart"
+    }
+  ]
+}

@@ -1,0 +1,47 @@
+name: cadence
+description: "Cadence: the desktop media player over cadenced."
+publish_to: "none"
+version: 0.9.1+1
+
+environment:
+  sdk: ^3.12.2
+
+dependencies:
+  flutter:
+    sdk: flutter
+  tomeui: ^0.3.1
+  # The window behind TitleBar: installWindowShell() in main puts the
+  # window_manager-backed shell where Tome's NoWindow default would be.
+  tomeui_desktop: ^0.3.1
+  # The typed models and the service envelopes the views speak.
+  cadence_media:
+    path: ../packages/media
+  # The wire transport to a running cadenced.
+  cadence_client:
+    path: ../packages/client
+  # The embeddable library host, for running standalone without a daemon.
+  cadenced:
+    path: ../daemon
+  # The artwork, kept once for every platform.
+  cadence_assets:
+    path: ../assets
+  # The built-in host opens the database itself; drift and file are its
+  # own tongue, spoken in embedded_library.dart.
+  drift: ^2.34.0
+  file: ^7.0.1
+  file_selector: ^1.0.3
+  path: ^1.9.0
+  dart_discord_presence: ^1.2.0
+  mpris: ^1.1.0
+  media_kit: ^1.2.6
+  media_kit_video: ^2.0.1
+  media_kit_libs_video: ^1.0.7
+  window_manager: ^0.5.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: false

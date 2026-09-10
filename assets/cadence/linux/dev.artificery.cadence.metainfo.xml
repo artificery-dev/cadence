@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>dev.artificery.cadence</id>
+  <name>Cadence</name>
+  <summary>A media player over your own library</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <developer id="dev.artificery">
+    <name>Artificery</name>
+  </developer>
+  <description>
+    <p>
+      Cadence keeps a library of your music, films, shows, books and pictures
+      and plays them. The library is scanned and watched by cadenced, which
+      runs inside Cadence by default or, when asked, as a background service
+      that keeps working while Cadence is closed.
+    </p>
+  </description>
+  <launchable type="desktop-id">dev.artificery.cadence.desktop</launchable>
+  <url type="homepage">https://artificery.dev</url>
+  <content_rating type="oars-1.1"/>
+</component>
