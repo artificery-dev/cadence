@@ -13,6 +13,7 @@ import 'package:cadenced/linux_volume.dart';
 import 'package:cadenced/endpoint.dart';
 import 'package:cadenced/declared_store.dart';
 import 'package:path/path.dart' as p;
+import 'package:cadenced/relocate_command.dart';
 
 void log(String event, [Map<String, Object?> data = const {}]) =>
     stdout.writeln(
@@ -30,6 +31,8 @@ void main(List<String> args) {
 }
 
 Future<void> run(List<String> args) async {
+  if (args.firstOrNull == 'relocate')
+    return runRelocationCommand(args.skip(1).toList());
   final options = <String, String>{};
   for (var i = 0; i < args.length; i += 2) {
     if (i + 1 >= args.length ||

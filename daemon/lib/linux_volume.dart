@@ -79,7 +79,13 @@ class LinuxVolumeAttachment
   static LinuxVolumeAttachment acquire(
     String path, {
     bool initialize = false,
-  }) => _acquire(path, initialize: initialize, requireMount: true);
+    String? expectedMountId,
+  }) => _acquire(
+    path,
+    initialize: initialize,
+    requireMount: true,
+    expectedMountId: expectedMountId,
+  );
 
   /// Pins an existing directory, never creates the root. This is appropriate
   /// for a home-rooted datastore, not for an SD mountpoint: callers must use
@@ -93,6 +99,7 @@ class LinuxVolumeAttachment
     String path, {
     required bool initialize,
     required bool requireMount,
+    String? expectedMountId,
   }) {
     if (!io.Platform.isLinux)
       throw UnsupportedError('Linux mount adapter required');
@@ -109,6 +116,8 @@ class LinuxVolumeAttachment
           .trim();
       if (requireMount && !_mounted(canonical, id))
         throw StateError('Volume path must be an attached mountpoint');
+      if (expectedMountId != null && id != expectedMountId)
+        throw StateError('Volume mount identity changed');
       if (initialize) {
         _string('.cadence', (p) => _mkdirat(root, p, 448));
         if (_fsync(root) != 0) throw StateError('Cannot sync volume directory');

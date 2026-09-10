@@ -9,6 +9,7 @@ import 'package:sqlite3/sqlite3.dart' as sql;
 import 'host.dart';
 import 'volume_vfs.dart';
 import 'root_access.dart';
+import 'relocation.dart' show requireActiveDatastore;
 
 /// Platform-owned lease on a volume, not a reusable mount-directory pathname.
 /// [fileSystem] exposes POSIX volume-relative paths rooted at `/`. All media,
@@ -242,6 +243,7 @@ class ManagedLibraryHost implements MediaEndpoint {
           vfs: vfs.name,
         );
       }
+      requireActiveDatastore(connection);
       final hasIdentity = connection
           .select(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='cadence_volume'",

@@ -8,6 +8,7 @@ import 'root_access.dart';
 import 'root_filesystem.dart';
 import 'volume.dart';
 import 'volume_vfs.dart';
+import 'relocation.dart' show requireActiveDatastore;
 
 typedef AcquireMediaRoot =
     RootLease Function(String root, String? mountPath, String? mountId);
@@ -75,6 +76,7 @@ class DeclaredMediaStore
   sql.Database openDatabase() {
     final db = sql.sqlite3.open('/.cadence/library.sqlite', vfs: _vfs.name);
     try {
+      requireActiveDatastore(db);
       final hasIdentity = db
           .select("SELECT name FROM sqlite_master WHERE name='cadence_volume'")
           .isNotEmpty;
