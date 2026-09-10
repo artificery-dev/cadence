@@ -120,12 +120,19 @@ class ScanCoordinator {
   final void Function(int libraryId)? onFinished;
 
   bool _closed = false;
+
+  /// Asks every running scan to stop and waits for it to. Scans already
+  /// finished are not waited on: their futures completed on the clock
+  /// they ran under, which a caller closing from elsewhere — a test's
+  /// teardown, outside the fake clock the test ran on — may never see.
   Future<void> close() async {
     _closed = true;
+    final running = <Future<void>>[];
     for (final scan in _scans.values) {
       scan.cancelRequested = true;
+      if (scan.finishedAt == null) running.add(scan.done);
     }
-    await Future.wait(_scans.values.map((s) => s.done));
+    await Future.wait(running);
   }
 
   final _scans = <int, _ActiveScan>{};

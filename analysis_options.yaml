@@ -1,0 +1,6 @@
+# The workspace is pure Dart; the Flutter app in app/ resolves on its own
+# (it needs the Flutter SDK, which the daemon's toolchain does not carry)
+# and is analyzed from inside app/ with `flutter analyze`.
+analyzer:
+  exclude:
+    - app/**

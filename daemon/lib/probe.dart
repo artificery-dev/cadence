@@ -59,8 +59,16 @@ class ProbeExtractor implements MetadataExtractor {
   /// and `build/rust/debug` — anchored both at `Directory.current` and at
   /// the package root this source resolves to — and finally the bare soname
   /// for the system loader to place.
-  static ProbeExtractor? tryLoad() {
-    for (final candidate in _candidates()) {
+  ///
+  /// [searchFirst] names directories (or files) to try before any of
+  /// those — an embedding application that bundles the library somewhere
+  /// of its own says where.
+  static ProbeExtractor? tryLoad({List<String> searchFirst = const []}) {
+    for (final candidate in [
+      for (final path in searchFirst)
+        FileSystemEntity.isDirectorySync(path) ? p.join(path, _soname) : path,
+      ..._candidates(),
+    ]) {
       final ProbeExtractor? loaded = _openAndBind(candidate);
       if (loaded != null) return loaded;
     }
