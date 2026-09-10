@@ -78,27 +78,29 @@ jobs:
     container:
       image: gcr.io/kaniko-project/executor:v1.23.2-debug
     steps:
-      # kaniko's image has busybox but no git or node, so the source comes
-      # from the repository archive API instead of actions/checkout.
+      # kaniko's image has busybox (whose wget lacks TLS) but no git or node,
+      # so kaniko clones the source itself through its git context instead of
+      # actions/checkout. Pushes pin the exact commit; a pull request builds
+      # the tip of its source branch, since its merge commit is on no branch.
       - name: Build toolchain/Containerfile with kaniko and push
         env:
           IMAGE: ${{ needs.toolchain.outputs.image }}
           REGISTRY_USERNAME: ${{ secrets.CI_FORGEJO_REGISTRY_USERNAME || github.actor }}
           REGISTRY_TOKEN: ${{ secrets.CI_FORGEJO_REGISTRY_TOKEN || secrets.GITHUB_TOKEN }}
-          API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GIT_USERNAME: ${{ github.actor }}
+          GIT_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_REF: ${{ github.head_ref && format('refs/heads/{0}', github.head_ref) || github.ref }}
+          SOURCE_SHA: ${{ github.head_ref && '' || github.sha }}
         run: |
           set -eu
           registry=${IMAGE%%/*}
           mkdir -p /kaniko/.docker
           auth=$(printf '%s:%s' "$REGISTRY_USERNAME" "$REGISTRY_TOKEN" | base64 | tr -d '\n')
           printf '{"auths":{"%s":{"auth":"%s"}}}' "$registry" "$auth" > /kaniko/.docker/config.json
-          mkdir -p /workspace/src
-          wget -q --header "Authorization: token $API_TOKEN" \
-            -O /workspace/src.tar.gz \
-            "$GITHUB_SERVER_URL/api/v1/repos/$GITHUB_REPOSITORY/archive/$GITHUB_SHA.tar.gz"
-          tar -xzf /workspace/src.tar.gz -C /workspace/src --strip-components=1
+          context="git://${GITHUB_SERVER_URL#*://}/${GITHUB_REPOSITORY}.git#${SOURCE_REF}${SOURCE_SHA:+#$SOURCE_SHA}"
+          echo "Building $IMAGE from $context"
           /kaniko/executor \
-            --context dir:///workspace/src \
+            --context "$context" \
             --dockerfile toolchain/Containerfile \
             --destination "$IMAGE" \
             --custom-platform linux/amd64 \
