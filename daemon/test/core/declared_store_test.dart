@@ -23,6 +23,12 @@ class _MediaLease implements RootLease {
   void close() => available = false;
 }
 
+class _Metadata extends MemoryCard implements RootedStoreAttachment {
+  _Metadata(FileSystem fs) : super(fs, () {});
+  @override
+  bool get removable => false;
+}
+
 void main() {
   test(
     'artwork cache uses metadata filesystem rather than media filesystem',
@@ -81,16 +87,16 @@ void main() {
         ..writeAsStringSync('song');
       _MediaLease? lease;
       var present = true;
-      ManagedLibraryHost make({String declared = '/mnt/sd'}) =>
+      ManagedLibraryHost make({String? declared = '/mnt/sd'}) =>
           ManagedLibraryHost(
             initialize: true,
             hostRootAvailability: true,
             attach: ({required initialize}) async => DeclaredMediaStore(
-              metadata: MemoryCard(metadata, () {}),
+              metadata: _Metadata(metadata),
               declaredMediaRoot: declared,
-              resolvedMediaRoot: '/mnt/sd',
-              mediaMount: '/mnt/sd',
-              acquireMediaRoot: (id) {
+              metadataRoot: '/home/tempo',
+              mediaMount: declared == null ? null : '/mnt/sd',
+              acquireMediaRoot: (root, mount, id) {
                 if (!present || id != 'mount-A')
                   throw StateError('Wrong mount');
                 return lease = _MediaLease(media, '/mnt/sd');
@@ -145,7 +151,7 @@ void main() {
       expect(await client.items(library), [original]);
       await host.close();
       present = false;
-      host = make();
+      host = make(declared: null);
       await host.open();
       client = CadenceClient(host);
       expect((await client.volume())['id'], initial['id']);
@@ -185,11 +191,11 @@ void main() {
         initialize: true,
         hostRootAvailability: true,
         attach: ({required initialize}) async => DeclaredMediaStore(
-          metadata: MemoryCard(metadata, () {}),
+          metadata: _Metadata(metadata),
           declaredMediaRoot: '.',
-          resolvedMediaRoot: '/home/tempo',
+          metadataRoot: '/home/tempo',
           mediaMount: null,
-          acquireMediaRoot: (id) {
+          acquireMediaRoot: (root, mount, id) {
             expect(id, null);
             return _MediaLease(media, '/home/tempo');
           },

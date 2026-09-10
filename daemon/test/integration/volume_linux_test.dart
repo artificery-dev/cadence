@@ -212,6 +212,47 @@ void main() {
         await client.close();
         process.kill(ProcessSignal.sigterm);
         expect(await process.exitCode, 0, reason: '$output');
+        // Existing stores load their declaration without host-side SQLite reads
+        // or a filesystem-based guess about where media might be today.
+        final restarted = await Process.start(
+          executable ?? Platform.resolvedExecutable,
+          [
+            if (executable == null) ...['run', 'bin/cadenced.dart'],
+            '--store',
+            '$root/.cadence',
+            '--store-kind',
+            portable ? 'mount' : 'directory',
+            '--socket',
+            socket,
+          ],
+        );
+        addTearDown(() async {
+          restarted.kill();
+          await restarted.exitCode;
+        });
+        final restored = Completer<Map>();
+        restarted.stderr.transform(utf8.decoder).listen(output.write);
+        restarted.stdout
+            .transform(utf8.decoder)
+            .transform(const LineSplitter())
+            .listen((line) {
+              output.writeln(line);
+              if (line.startsWith('{')) {
+                final data = jsonDecode(line) as Map;
+                if (data['event'] == 'ready' && !restored.isCompleted)
+                  restored.complete(data['volume'] as Map);
+              }
+            });
+        final restoredStatus = await restored.future.timeout(
+          const Duration(seconds: 60),
+        );
+        expect(restoredStatus['state'], 'attached', reason: '$output');
+        expect(restoredStatus['id'], status['id']);
+        expect(restoredStatus['mediaRoot'], status['mediaRoot']);
+        expect(restoredStatus['mediaMount'], status['mediaMount']);
+        expect(restoredStatus['rootAvailabilityReady'], false);
+        restarted.kill(ProcessSignal.sigterm);
+        expect(await restarted.exitCode, 0, reason: '$output');
       }
       await command('umount', [mount.path]);
     },

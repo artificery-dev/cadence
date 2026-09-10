@@ -9,7 +9,8 @@ import 'root_filesystem.dart';
 import 'volume.dart';
 import 'volume_vfs.dart';
 
-typedef AcquireMediaRoot = RootLease Function(String? mountId);
+typedef AcquireMediaRoot =
+    RootLease Function(String root, String? mountPath, String? mountId);
 
 /// One declared media base, independent of where /.cadence is stored. The host
 /// observes real mounts, while scanners and clients see paths beneath virtual
@@ -22,12 +23,14 @@ class DeclaredMediaStore
         LocalPlaybackVolume {
   DeclaredMediaStore({
     required this.metadata,
-    required this.declaredMediaRoot,
-    required this.resolvedMediaRoot,
-    required this.mediaMount,
+    required this.metadataRoot,
+    String? declaredMediaRoot,
+    String? mediaMount,
     required this.acquireMediaRoot,
     required this.playerPath,
-  }) : fileSystem = RootFileSystem(MemoryFileSystem.test()) {
+  }) : _requestedRoot = declaredMediaRoot,
+       _requestedMount = mediaMount,
+       fileSystem = RootFileSystem(MemoryFileSystem()) {
     _vfs = VolumeVfs(
       metadata.fileSystem,
       name: 'declared-store-${_sequence++}',
@@ -37,11 +40,15 @@ class DeclaredMediaStore
   }
   static int _sequence = 0;
   final VolumeAttachment metadata;
+  final String metadataRoot;
+  final String? _requestedRoot, _requestedMount;
   @override
-  final String declaredMediaRoot;
-  final String resolvedMediaRoot;
+  late final String declaredMediaRoot;
   @override
-  final String? mediaMount;
+  late final String resolvedMediaRoot;
+  @override
+  late final String? mediaMount;
+  String? _mountDeclaration;
   final AcquireMediaRoot acquireMediaRoot;
   final String Function(String path) playerPath;
   late final VolumeVfs _vfs;
@@ -83,14 +90,59 @@ class DeclaredMediaStore
           409,
         );
       if (hasConfig) {
-        final rows = db.select('SELECT root FROM cadence_media_base');
-        if (rows.length != 1 || rows.single['root'] != declaredMediaRoot)
+        if (!db
+            .select('PRAGMA table_info(cadence_media_base)')
+            .any((r) => r['name'] == 'mount'))
+          throw MediaError(
+            'unsupported_datastore_format',
+            'Current declared media-base configuration is required',
+            409,
+          );
+        final rows = db.select('SELECT root,mount FROM cadence_media_base');
+        if (rows.length != 1 ||
+            (_requestedRoot != null && rows.single['root'] != _requestedRoot))
           throw MediaError(
             'media_root_mismatch',
             'Persisted media root differs; it cannot be retargeted at startup',
             409,
           );
+        declaredMediaRoot = rows.single['root'] as String;
+        _mountDeclaration = rows.single['mount'] as String?;
+      } else {
+        if (_requestedRoot == null)
+          throw MediaError(
+            'media_root_required',
+            'New stores require an explicit declared media root',
+            400,
+          );
+        declaredMediaRoot = _requestedRoot;
+        _mountDeclaration = _requestedMount == metadataRoot
+            ? '.'
+            : _requestedMount;
       }
+      final context = metadata.fileSystem.path;
+      resolvedMediaRoot = declaredMediaRoot == '.'
+          ? metadataRoot
+          : declaredMediaRoot;
+      mediaMount = _mountDeclaration == '.' ? metadataRoot : _mountDeclaration;
+      if (!context.isAbsolute(resolvedMediaRoot) ||
+          context.normalize(resolvedMediaRoot) != resolvedMediaRoot ||
+          (mediaMount != null &&
+              (!context.isAbsolute(mediaMount!) ||
+                  context.normalize(mediaMount!) != mediaMount ||
+                  !(mediaMount == resolvedMediaRoot ||
+                      context.isWithin(mediaMount!, resolvedMediaRoot)))))
+        throw MediaError(
+          'invalid_media_base',
+          'Invalid persisted media base or mount',
+          409,
+        );
+      if (_requestedMount != null && _requestedMount != mediaMount)
+        throw MediaError(
+          'media_mount_mismatch',
+          'Persisted media mount differs; it cannot be retargeted at startup',
+          409,
+        );
       // New databases are initialized by ManagedLibraryHost. Write configuration
       // only after identity initialization through initializeConfiguration().
       return db;
@@ -103,11 +155,12 @@ class DeclaredMediaStore
   @override
   void initializeConfiguration(sql.Database db) {
     db.execute(
-      'CREATE TABLE IF NOT EXISTS cadence_media_base (root TEXT NOT NULL)',
+      'CREATE TABLE IF NOT EXISTS cadence_media_base (root TEXT NOT NULL, mount TEXT)',
     );
     if (db.select('SELECT root FROM cadence_media_base').isEmpty)
-      db.execute('INSERT INTO cadence_media_base VALUES (?)', [
+      db.execute('INSERT INTO cadence_media_base VALUES (?,?)', [
         declaredMediaRoot,
+        _mountDeclaration,
       ]);
   }
 
@@ -124,7 +177,11 @@ class DeclaredMediaStore
                   )))) {
         throw StateError('Observations must identify the declared media mount');
       }
-      final lease = acquireMediaRoot(available.first.mountId);
+      final lease = acquireMediaRoot(
+        resolvedMediaRoot,
+        mediaMount,
+        available.first.mountId,
+      );
       try {
         final context = lease.fileSystem.path;
         final relative = context.relative(

@@ -312,6 +312,19 @@ class ManagedLibraryHost implements MediaEndpoint {
       await database.customStatement(
         'CREATE TABLE IF NOT EXISTS daemon_root_sources (root_id INTEGER PRIMARY KEY REFERENCES library_roots(id) ON DELETE CASCADE, source_id TEXT)',
       );
+      if (relative != null) {
+        // Physical mount paths may differ on the next player. The declaration
+        // supplies their current location; stable source IDs still gate reuse.
+        await database.transaction(() async {
+          await database.customStatement('DELETE FROM daemon_root_mounts');
+          if (relative.mediaMount != null) {
+            await database.customStatement(
+              'INSERT INTO daemon_root_mounts SELECT id, ? FROM library_roots',
+              [relative.mediaMount],
+            );
+          }
+        });
+      }
       final sourceRows = await database
           .customSelect('SELECT * FROM daemon_root_sources')
           .get();

@@ -73,9 +73,7 @@ Future<void> run(List<String> args) async {
       (declared &&
           options.containsKey('--availability') &&
           options['--availability'] != 'host') ||
-      (declared &&
-          (!['directory', 'mount'].contains(options['--store-kind']) ||
-              options['--media-root'] == null)) ||
+      (declared && !['directory', 'mount'].contains(options['--store-kind'])) ||
       (!declared &&
           [
             '--store-kind',
@@ -107,31 +105,18 @@ Future<void> run(List<String> args) async {
     final storePath = options['--store'];
     final declaration = options['--media-root'];
     final mediaMount = options['--media-mount'];
-    String? resolvedMediaRoot;
     if (declared) {
       if (!p.isAbsolute(storePath!) ||
           p.normalize(storePath) != storePath ||
           p.basename(storePath) != '.cadence')
         throw ArgumentError('--store must be an absolute .cadence directory');
-      if (declaration != '.' &&
-          (!p.isAbsolute(declaration!) ||
+      if (declaration != null &&
+          declaration != '.' &&
+          (!p.isAbsolute(declaration) ||
               p.normalize(declaration) != declaration))
         throw ArgumentError(
           '--media-root must be . or a canonical absolute directory',
         );
-      resolvedMediaRoot = declaration == '.'
-          ? p.dirname(storePath)
-          : declaration;
-      if (mediaMount != null &&
-          (!p.isAbsolute(mediaMount) ||
-              p.normalize(mediaMount) != mediaMount ||
-              !(resolvedMediaRoot == mediaMount ||
-                  p.isWithin(mediaMount, resolvedMediaRoot!))))
-        throw ArgumentError(
-          '--media-mount must contain the declared media root',
-        );
-      if (options['--store-kind'] == 'mount' && mediaMount == null)
-        throw ArgumentError('Removable stores require --media-mount');
     }
     final managed = ManagedLibraryHost(
       attach: ({required initialize}) async => portable
@@ -150,12 +135,12 @@ Future<void> run(List<String> args) async {
                       p.dirname(storePath!),
                       initialize: initialize,
                     ),
-              declaredMediaRoot: declaration!,
-              resolvedMediaRoot: resolvedMediaRoot!,
+              declaredMediaRoot: declaration,
+              metadataRoot: p.dirname(storePath),
               mediaMount: mediaMount,
-              acquireMediaRoot: (mountId) => mediaMount == null
-                  ? LinuxRootLease.acquireDirectory(resolvedMediaRoot!)
-                  : LinuxRootLease.acquire(mediaMount, mountId!),
+              acquireMediaRoot: (root, mount, mountId) => mount == null
+                  ? LinuxRootLease.acquireDirectory(root)
+                  : LinuxRootLease.acquire(mount, mountId!),
               playerPath: (path) =>
                   path.replaceFirst('/proc/self/', '/proc/$pid/'),
             )
