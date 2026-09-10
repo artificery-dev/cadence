@@ -61,6 +61,16 @@ class MediaService {
   Future<ArtworkRow?> artwork(int fileId) async =>
       await _libraries.artworkOf(fileId) ?? await _artwork?.ensure(fileId);
 
+  Future<void> pauseBackground() async {
+    await _watch.stop();
+    await _artwork?.pause();
+  }
+
+  Future<void> resumeBackground() async {
+    _artwork?.resume();
+    await syncWatchers();
+  }
+
   Future<void> close() async {
     try {
       await _coordinator.close();

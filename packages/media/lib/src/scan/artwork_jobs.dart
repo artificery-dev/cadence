@@ -37,6 +37,7 @@ class ArtworkQueue {
     this.renderThumbnail = images.renderThumbnail,
     this.thumbnailSide = 256,
     this.onArtworkChanged,
+    this.fileAvailable,
   }) : fileSystem = fileSystem ?? mediaFileSystem,
        _repo = ScannerRepository(db);
 
@@ -48,6 +49,7 @@ class ArtworkQueue {
   final ExtractorBuilder buildExtractor;
   final ThumbnailRenderer renderThumbnail;
   final int thumbnailSide;
+  final bool Function(String path)? fileAvailable;
   final void Function(int fileId)? onArtworkChanged;
 
   final _queue = ListQueue<int>();
@@ -61,6 +63,7 @@ class ArtworkQueue {
   MediaExtractor? _local;
   bool _pumping = false;
   bool _closed = false;
+  bool _paused = false;
   Completer<void>? _idle;
 
   /// How many pictures have been rendered since the queue was made.
@@ -152,6 +155,16 @@ class ArtworkQueue {
   Future<void> idle() =>
       _pumping ? (_idle ??= Completer<void>()).future : Future<void>.value();
 
+  Future<void> pause() async {
+    _paused = true;
+    await idle();
+  }
+
+  void resume() {
+    _paused = false;
+    _pump();
+  }
+
   Future<void> close() async {
     _closed = true;
     _queue.clear();
@@ -176,14 +189,14 @@ class ArtworkQueue {
           .getSingleOrNull();
 
   void _pump() {
-    if (_pumping || _closed) return;
+    if (_pumping || _closed || _paused) return;
     _pumping = true;
     unawaited(withMediaFileSystem(fileSystem, _drain));
   }
 
   Future<void> _drain() async {
     try {
-      while (_queue.isNotEmpty && !_closed) {
+      while (_queue.isNotEmpty && !_closed && !_paused) {
         final id = _queue.removeFirst();
         _queued.remove(id);
         ArtworkRow? row;
@@ -215,7 +228,11 @@ class ArtworkQueue {
     final file = await (db.select(
       db.files,
     )..where((f) => f.id.equals(fileId))).getSingleOrNull();
-    if (file == null || file.kind == MediaKind.document) return null;
+    if (file == null ||
+        file.kind == MediaKind.document ||
+        fileAvailable?.call(file.path) == false) {
+      return null;
+    }
     final cover =
         await (db.select(db.sidecars)
               ..where(
@@ -225,13 +242,24 @@ class ArtworkQueue {
               )
               ..limit(1))
             .getSingleOrNull();
-    final job = _ArtworkJob(file.path, file.kind, cover?.path, thumbnailSide);
+    final coverPath = cover?.path;
+    final job = _ArtworkJob(
+      file.path,
+      file.kind,
+      coverPath != null && fileAvailable?.call(coverPath) != false
+          ? coverPath
+          : null,
+      thumbnailSide,
+    );
     final _Rendered? rendered;
     rendered = await _renderWith(
       _local ??= buildExtractor(),
       renderThumbnail,
       job,
     );
+    if (fileAvailable?.call(file.path) == false || _closed || _paused) {
+      return null;
+    }
     if (rendered == null) {
       _bare.add(fileId);
       bare++;

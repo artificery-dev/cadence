@@ -308,7 +308,8 @@ class LibraryScanner {
             modifiedAt: file.modifiedAt,
           ),
         );
-      } else if (fullyHashed.contains(row.id) &&
+      } else if (row.scannedAt != null &&
+          fullyHashed.contains(row.id) &&
           row.sizeBytes == file.sizeBytes &&
           _sameSecond(row.modifiedAt, file.modifiedAt) &&
           (pending[file.path] == null ||

@@ -4,10 +4,11 @@ import 'dart:math';
 import 'package:cadence_client/cadence_client.dart';
 import 'package:cadence_media/cadence_media.dart';
 import 'package:drift/native.dart';
-import 'package:drift/drift.dart' show Variable;
+import 'package:drift/drift.dart' show Variable, Value;
 import 'package:sqlite3/sqlite3.dart' as sql;
 import 'host.dart';
 import 'volume_vfs.dart';
+import 'root_access.dart';
 
 /// Platform-owned lease on a volume, not a reusable mount-directory pathname.
 /// [fileSystem] exposes POSIX volume-relative paths rooted at `/`. All media,
@@ -30,21 +31,37 @@ abstract interface class LocalPlaybackVolume {
   String playbackPath(String volumePath);
 }
 
+/// Local metadata storage with media roots anywhere in the injected filesystem.
+/// The adapter owns the SQLite connection's exclusive OS lease and cache path.
+abstract interface class LocalStoreAttachment implements VolumeAttachment {
+  bool get databaseExists;
+  String get cacheDirectory;
+  sql.Database openDatabase();
+}
+
 typedef AttachVolume =
     Future<VolumeAttachment> Function({required bool initialize});
 
 /// Keeps the endpoint alive across card removal. Attach is host-configured:
 /// callers cannot supply a mount path. The same implementation is embeddable.
-class PortableVolumeHost implements MediaEndpoint {
-  PortableVolumeHost({
+class ManagedLibraryHost implements MediaEndpoint {
+  ManagedLibraryHost({
     required this.attach,
     this.initialize = false,
     this.policy = const ScanPolicy(artwork: ArtworkPolicy.deferred),
     this.nativeAvailable = false,
     this.reconcileOnAttach = true,
     this.buildExtractor = defaultMediaExtractor,
+    this.hostRootAvailability = false,
+    this.watch,
   });
   final AttachVolume attach;
+  final bool hostRootAvailability;
+  final LibraryWatchService Function(ScanCoordinator)? watch;
+  bool _rootAvailabilityReady = true;
+  String _storageKind = 'portable';
+  List<RootObservation> _roots = [];
+  bool _checkingRoots = false;
   final bool initialize;
   late bool _mayInitialize = initialize;
   final bool reconcileOnAttach;
@@ -80,11 +97,42 @@ class PortableVolumeHost implements MediaEndpoint {
             'queuedJobs': 0,
             'artwork': {'running': false, 'pending': 0},
           }),
-      'draining': _quiescing && _host != null,
+      'draining': (_quiescing || !_rootAvailabilityReady) && _host != null,
     },
     'state': _state,
     'formatVersion': 1,
-    'pathStyle': 'volume-posix',
+    'storageKind': _storageKind,
+    'rootAvailabilityReady': _rootAvailabilityReady,
+    'roots': [
+      if (hostRootAvailability)
+        for (final r in _roots)
+          {
+            'rootId': r.rootId,
+            'path': r.path,
+            'available':
+                r.available &&
+                (_attachment is! RootAccessAdapter ||
+                    (_attachment as RootAccessAdapter).rootAvailable(r.path)),
+            'mountPath': r.mountPath,
+            'mountId': r.mountId,
+            'sourceId': r.sourceId,
+          },
+    ],
+    'quiescentRootIds': [
+      if (hostRootAvailability && _rootAvailabilityReady)
+        for (final r in _roots)
+          if (!r.available) r.rootId,
+    ],
+    'quiescentMountPaths': [
+      if (hostRootAvailability && _rootAvailabilityReady)
+        for (final mount
+            in _roots.map((r) => r.mountPath).whereType<String>().toSet())
+          if (_roots
+              .where((r) => r.mountPath == mount)
+              .every((r) => !r.available))
+            mount,
+    ],
+    'pathStyle': _storageKind == 'portable' ? 'volume-posix' : 'host-absolute',
     'readyToUnmount': _state == 'detached',
     'scope': 'cadenced',
     if (_error != null) 'error': _error,
@@ -125,27 +173,44 @@ class PortableVolumeHost implements MediaEndpoint {
       );
       if (!attachment.isAttached) throw StateError('Volume is unavailable');
       final fs = attachment.fileSystem;
+      final local = attachment is LocalStoreAttachment ? attachment : null;
+      _storageKind = local == null ? 'portable' : 'local';
+      _rootAvailabilityReady = !hostRootAvailability;
       final stored = fs.file('/.cadence/library.sqlite');
-      final exists = stored.existsSync() && stored.lengthSync() > 0;
-      if (!exists && !allowInitialize)
+      final exists =
+          local?.databaseExists ??
+          (stored.existsSync() && stored.lengthSync() > 0);
+      if (!exists && !allowInitialize && local == null)
         throw StateError(
           'Uninitialized volume; explicit initialization required',
         );
       if (expectedId != null && !exists)
-        throw StateError('Expected existing volume');
-      final vfs = _vfs = VolumeVfs(
-        fs,
-        name: 'cadence-volume-$epoch-${++_revision}',
-        syncDirectory: attachment.syncDirectory,
-      );
-      sql.sqlite3.registerVirtualFileSystem(vfs);
-      connection = sql.sqlite3.open('/.cadence/library.sqlite', vfs: vfs.name);
+        throw StateError('Expected existing datastore');
+      if (local != null) {
+        connection = local.openDatabase();
+      } else {
+        final vfs = _vfs = VolumeVfs(
+          fs,
+          name: 'cadence-volume-$epoch-${++_revision}',
+          syncDirectory: attachment.syncDirectory,
+        );
+        sql.sqlite3.registerVirtualFileSystem(vfs);
+        connection = sql.sqlite3.open(
+          '/.cadence/library.sqlite',
+          vfs: vfs.name,
+        );
+      }
       // This VFS deliberately has no shared-memory API. All temporary tables
       // remain in memory, and every persistent write uses the volume lease.
       connection.execute('PRAGMA journal_mode = DELETE');
       connection.execute('PRAGMA synchronous = EXTRA');
       connection.execute('PRAGMA temp_store = MEMORY');
-      if (!exists) {
+      final hasIdentity = connection
+          .select(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='cadence_volume'",
+          )
+          .isNotEmpty;
+      if (!exists || (local != null && !hasIdentity)) {
         final random = Random.secure();
         final bytes = List<int>.generate(16, (_) => random.nextInt(256));
         bytes[6] = (bytes[6] & 15) | 64;
@@ -155,10 +220,12 @@ class PortableVolumeHost implements MediaEndpoint {
             .join();
         final id =
             '${hex.substring(0, 8)}-${hex.substring(8, 12)}-${hex.substring(12, 16)}-${hex.substring(16, 20)}-${hex.substring(20)}';
+        connection.execute('BEGIN IMMEDIATE');
         connection.execute(
           'CREATE TABLE cadence_volume (id TEXT PRIMARY KEY, format_version INTEGER NOT NULL)',
         );
         connection.execute('INSERT INTO cadence_volume VALUES (?, 1)', [id]);
+        connection.execute('COMMIT');
       }
       final rows = connection.select(
         'SELECT id, format_version FROM cadence_volume',
@@ -176,7 +243,9 @@ class PortableVolumeHost implements MediaEndpoint {
         _host = await MediaHost.open(
           database: database,
           fileSystem: fs,
-          cacheDirectory: '/.cadence/cache',
+          cacheDirectory: local?.cacheDirectory ?? '/.cadence/cache',
+          requireRootAvailability: hostRootAvailability,
+          watch: watch,
           policy: policy,
           buildExtractor: buildExtractor,
           nativeAvailable: nativeAvailable,
@@ -185,6 +254,40 @@ class PortableVolumeHost implements MediaEndpoint {
       } catch (_) {
         await database.close();
         rethrow;
+      }
+      await database.customStatement(
+        'CREATE TABLE IF NOT EXISTS daemon_root_mounts (root_id INTEGER PRIMARY KEY REFERENCES library_roots(id) ON DELETE CASCADE, mount_path TEXT NOT NULL)',
+      );
+      await database.customStatement(
+        'CREATE TABLE IF NOT EXISTS daemon_root_sources (root_id INTEGER PRIMARY KEY REFERENCES library_roots(id) ON DELETE CASCADE, source_id TEXT)',
+      );
+      final sourceRows = await database
+          .customSelect('SELECT * FROM daemon_root_sources')
+          .get();
+      final sources = {
+        for (final r in sourceRows)
+          r.read<int>('root_id'): r.readNullable<String>('source_id'),
+      };
+      final mountRows = await database
+          .customSelect('SELECT * FROM daemon_root_mounts')
+          .get();
+      final mounts = {
+        for (final r in mountRows)
+          r.read<int>('root_id'): r.read<String>('mount_path'),
+      };
+      _roots = [
+        for (final r in await database.select(database.libraryRoots).get())
+          RootObservation(
+            r.id,
+            r.path,
+            false,
+            mountPath: mounts[r.id],
+            sourceId: sources[r.id],
+          ),
+      ];
+      if (attachment is RootAccessAdapter) {
+        _host!.rootAccessAvailable =
+            (attachment as RootAccessAdapter).rootAvailable;
       }
       _subscription = _host!.events.listen((e) {
         _emit(e);
@@ -195,19 +298,43 @@ class PortableVolumeHost implements MediaEndpoint {
       _quiescing = false;
       _state = 'attached';
       _changed();
-      _host!.resumeJobs();
-      if (reconcileOnAttach) {
-        for (final library in await LibraryRepository(
-          database,
-        ).listLibraries()) {
-          try {
-            await _host!.request('post', '/libraries/${library.id}/scan');
-          } on MediaError catch (e) {
-            if (e.code != 'scan_conflict') rethrow;
-          }
-        }
-      }
+      if (_rootAvailabilityReady) await _resume();
       _monitor = Timer.periodic(const Duration(milliseconds: 250), (_) {
+        final adapter = _attachment;
+        if (!_checkingRoots &&
+            _rootAvailabilityReady &&
+            adapter is RootAccessAdapter &&
+            _roots.any(
+              (r) =>
+                  r.available &&
+                  !(adapter as RootAccessAdapter).rootAvailable(r.path),
+            )) {
+          _checkingRoots = true;
+          unawaited(
+            _exclusive(() async {
+                  if (_closed || _host == null) return;
+                  await _applyRoots([
+                    for (final r in _roots)
+                      RootObservation(
+                        r.rootId,
+                        r.path,
+                        r.available &&
+                            (adapter as RootAccessAdapter).rootAvailable(
+                              r.path,
+                            ),
+                        mountPath: r.mountPath,
+                        mountId: r.mountId,
+                        sourceId: r.sourceId,
+                      ),
+                  ]);
+                })
+                .catchError((Object e) {
+                  _error = '$e';
+                  _changed();
+                })
+                .whenComplete(() => _checkingRoots = false),
+          );
+        }
         if (_attachment?.isAttached == false) {
           _monitor?.cancel();
           unawaited(_exclusive(() => _detach(lost: true)));
@@ -225,6 +352,109 @@ class PortableVolumeHost implements MediaEndpoint {
       _changed();
       rethrow;
     }
+  }
+
+  Future<void> _resume() async {
+    final host = _host!;
+    host.resumeJobs();
+    await host.service.resumeBackground();
+    if (reconcileOnAttach) {
+      for (final library in await LibraryRepository(host.db).listLibraries()) {
+        try {
+          await host.request('post', '/libraries/${library.id}/scan');
+        } on MediaError catch (e) {
+          if (e.code != 'scan_conflict') rethrow;
+        }
+      }
+    }
+  }
+
+  Future<void> _applyRoots(List<RootObservation> roots) async {
+    final host = _host!;
+    _rootAvailabilityReady = false;
+    for (final root in roots) {
+      host.availability[root.path] = false;
+    }
+    _changed();
+    await host.pauseWork();
+    final adapter = _attachment;
+    try {
+      if (adapter is RootAccessAdapter)
+        (adapter as RootAccessAdapter).configureRoots(roots);
+      else if (roots.any((r) => r.mountPath != null))
+        throw UnsupportedError('No removable-root adapter');
+      final invalidated = roots
+          .where(
+            (r) =>
+                r.available &&
+                r.mountPath != null &&
+                (r.sourceId == null ||
+                    !_roots.any(
+                      (old) =>
+                          old.rootId == r.rootId && old.sourceId == r.sourceId,
+                    )),
+          )
+          .toList();
+      if (invalidated.isNotEmpty) {
+        final files = await host.db.select(host.db.files).get();
+        final ids = [
+          for (final file in files)
+            if (invalidated.any(
+              (r) => host.fileSystem.path.isWithin(r.path, file.path),
+            ))
+              file.id,
+        ];
+        for (var start = 0; start < ids.length; start += 500) {
+          await (host.db.update(host.db.files)
+                ..where((f) => f.id.isIn(ids.skip(start).take(500))))
+              .write(const FilesCompanion(scannedAt: Value(null)));
+        }
+      }
+      await host.setRootAvailability({
+        for (final r in roots) r.rootId: r.available,
+      });
+      await host.db.transaction(() async {
+        for (final r in roots) {
+          await host.db.customStatement(
+            'INSERT OR REPLACE INTO daemon_root_sources VALUES (?, ?)',
+            [r.rootId, r.sourceId],
+          );
+          if (r.mountPath != null)
+            await host.db.customStatement(
+              'INSERT OR REPLACE INTO daemon_root_mounts VALUES (?, ?)',
+              [r.rootId, r.mountPath],
+            );
+        }
+      });
+    } catch (e) {
+      for (final root in roots) {
+        host.availability[root.path] = false;
+      }
+      _error = '$e';
+      _changed();
+      throw MediaError('root_observation_failed', '$e', 409);
+    }
+    _roots = roots;
+    _rootAvailabilityReady = true;
+    _generation = '$epoch-${++_attachmentSequence}';
+    _error = null;
+    _changed();
+    await _resume();
+  }
+
+  Future<void> _rootConfigurationChanged() async {
+    if (!hostRootAvailability) return;
+    _rootAvailabilityReady = false;
+    final host = _host!;
+    for (final path in host.availability.keys.toList()) {
+      host.availability[path] = false;
+    }
+    await host.pauseWork();
+    final adapter = _attachment;
+    if (adapter is RootAccessAdapter)
+      (adapter as RootAccessAdapter).configureRoots([]);
+    _generation = '$epoch-${++_attachmentSequence}';
+    _changed();
   }
 
   void _release() {
@@ -371,9 +601,13 @@ class PortableVolumeHost implements MediaEndpoint {
     if (method == 'get' && path == '/capabilities' && _host == null) {
       return {
         'apiVersions': [1],
-        'portableVolume': true,
+        'portableVolume': _storageKind == 'portable',
+        'managedStore': true,
+        'hostRootAvailability': hostRootAvailability,
         'volumeFormatVersion': 1,
-        'pathStyle': 'volume-posix',
+        'pathStyle': _storageKind == 'portable'
+            ? 'volume-posix'
+            : 'host-absolute',
         'eventRecovery': 'snapshot-and-query',
         'localPlayback': true,
         'watch': false,
@@ -387,6 +621,140 @@ class PortableVolumeHost implements MediaEndpoint {
         'Attach the library volume first',
         503,
       );
+    if (method == 'post' && path == '/volume/roots') {
+      if (!hostRootAvailability)
+        throw MediaError(
+          'unsupported_capability',
+          'Host root availability is not enabled',
+          409,
+        );
+      if (body?['expectedId'] != _id ||
+          body?['expectedGeneration'] != _generation)
+        throw MediaError(
+          'stale_generation',
+          'Current datastore identity and generation required',
+          409,
+        );
+      final roots = body?['roots'];
+      if (roots is! List)
+        throw MediaError(
+          'invalid_request',
+          'roots must be a complete list',
+          400,
+        );
+      final configured = {
+        for (final r in await host.db.select(host.db.libraryRoots).get())
+          r.id: r,
+      };
+      final mounts = {
+        for (final r
+            in await host.db
+                .customSelect('SELECT * FROM daemon_root_mounts')
+                .get())
+          r.read<int>('root_id'): r.read<String>('mount_path'),
+      };
+      final values = <int, RootObservation>{};
+      for (final root in roots) {
+        if (root is! Map ||
+            root['rootId'] is! int ||
+            root['available'] is! bool ||
+            values.containsKey(root['rootId']) ||
+            !configured.containsKey(root['rootId']))
+          throw MediaError(
+            'invalid_request',
+            'Known unique rootId and boolean available required',
+            400,
+          );
+        final row = configured[root['rootId']]!;
+        final mount = root['mountPath'] ?? mounts[row.id];
+        if (mount != null &&
+            (mount is! String ||
+                !host.fileSystem.path.isAbsolute(mount) ||
+                !(row.path == mount ||
+                    host.fileSystem.path.isWithin(mount, row.path))))
+          throw MediaError(
+            'invalid_request',
+            'mountPath must contain its configured root',
+            400,
+          );
+        if (mount != null &&
+            root['available'] == true &&
+            root['mountId'] is! String)
+          throw MediaError(
+            'invalid_request',
+            'Current mountId is required for available removable roots',
+            400,
+          );
+        if (root['sourceId'] != null &&
+            (root['sourceId'] is! String ||
+                (root['sourceId'] as String).isEmpty))
+          throw MediaError(
+            'invalid_request',
+            'sourceId must be a nonempty string',
+            400,
+          );
+        if (root['mountId'] != null && root['mountId'] is! String)
+          throw MediaError('invalid_request', 'mountId must be a string', 400);
+        values[row.id] = RootObservation(
+          row.id,
+          row.path,
+          root['available'] as bool,
+          mountPath: mount as String?,
+          mountId: root['mountId'] as String?,
+          sourceId:
+              root['sourceId'] as String? ??
+              (root['available'] == false
+                  ? _roots
+                        .where((r) => r.rootId == row.id)
+                        .firstOrNull
+                        ?.sourceId
+                  : null),
+        );
+      }
+      if (values.length != configured.length)
+        throw MediaError(
+          'invalid_request',
+          'Supply every configured root exactly once',
+          400,
+        );
+      final observations = values.values.toList();
+      for (final r in observations) {
+        if (observations.any(
+          (other) => other.path == r.path && other.available != r.available,
+        ))
+          throw MediaError(
+            'invalid_request',
+            'Shared root availability must agree',
+            400,
+          );
+        if (r.available &&
+            r.mountPath != null &&
+            observations.any(
+              (other) =>
+                  other.available &&
+                  other.mountPath == r.mountPath &&
+                  other.mountId != r.mountId,
+            ))
+          throw MediaError(
+            'invalid_request',
+            'Mount identities must agree',
+            400,
+          );
+      }
+      await _applyRoots(observations);
+      return status;
+    }
+    if (!_rootAvailabilityReady &&
+        ((method == 'post' &&
+                Uri.parse(path).pathSegments.lastOrNull == 'scan') ||
+            path == '/media/resolve' ||
+            path.startsWith('/artwork'))) {
+      throw MediaError(
+        'root_availability_required',
+        'Provide /volume/roots before starting filesystem work',
+        409,
+      );
+    }
     if (method == 'post' && path == '/media/resolve') {
       if (body?['libraryUuid'] is! String ||
           body?['itemId'] is! int ||
@@ -424,6 +792,8 @@ class PortableVolumeHost implements MediaEndpoint {
           501,
         );
       final path = rows.single.read<String>('path');
+      if (!host.fileAvailable(path))
+        throw MediaError('root_unavailable', 'Media root is unavailable', 503);
       if (!await host.fileSystem.file(path).exists())
         throw MediaError('not_found', 'Media file unavailable', 404);
       return {
@@ -434,7 +804,8 @@ class PortableVolumeHost implements MediaEndpoint {
         'path': (attachment as LocalPlaybackVolume).playbackPath(path),
       };
     }
-    if (method == 'post' &&
+    if (_storageKind == 'portable' &&
+        method == 'post' &&
         Uri.parse(path).pathSegments.lastOrNull == 'roots') {
       final root = body?['path'];
       if (root is! String ||
@@ -450,7 +821,65 @@ class PortableVolumeHost implements MediaEndpoint {
         );
       }
     }
+    final parts = Uri.parse(path).pathSegments;
+    if (hostRootAvailability &&
+        method == 'put' &&
+        parts.length == 4 &&
+        parts[2] == 'roots')
+      throw MediaError(
+        'use_root_snapshot',
+        'Use /volume/roots for a draining availability update',
+        409,
+      );
+    if (hostRootAvailability &&
+        method == 'post' &&
+        parts.length == 3 &&
+        parts[2] == 'roots') {
+      final rootPath = body?['path'];
+      final mount = body?['mountPath'];
+      if (mount != null &&
+          (mount is! String ||
+              rootPath is! String ||
+              !host.fileSystem.path.isAbsolute(mount) ||
+              !(rootPath == mount ||
+                  host.fileSystem.path.isWithin(mount, rootPath))))
+        throw MediaError(
+          'invalid_request',
+          'mountPath must contain its root',
+          400,
+        );
+      final result = await host.request(method, path, {
+        ...?body,
+        'available': false,
+      });
+      if (mount != null)
+        await host.db.customStatement(
+          'INSERT INTO daemon_root_mounts VALUES (?, ?)',
+          [result['id'], mount],
+        );
+      await _rootConfigurationChanged();
+      return result;
+    }
     final result = await host.request(method, path, body);
+    if (method == 'delete' &&
+        parts.firstOrNull == 'libraries' &&
+        (parts.length == 2 || parts.length == 4 && parts[2] == 'roots'))
+      await _rootConfigurationChanged();
+    if (method == 'get' &&
+        (path == '/snapshot' || parts.lastOrNull == 'roots') &&
+        result['roots'] is List) {
+      final mounts = {
+        for (final r
+            in await host.db
+                .customSelect('SELECT * FROM daemon_root_mounts')
+                .get())
+          r.read<int>('root_id'): r.read<String>('mount_path'),
+      };
+      result['roots'] = [
+        for (final r in (result['roots'] as List).cast<Map>())
+          {...r, 'mountPath': mounts[r['id']]},
+      ];
+    }
     if (path == '/snapshot')
       return {
         ...result,
@@ -461,10 +890,14 @@ class PortableVolumeHost implements MediaEndpoint {
     if (path == '/capabilities')
       return {
         ...result,
-        'portableVolume': true,
+        'portableVolume': _storageKind == 'portable',
+        'managedStore': true,
+        'hostRootAvailability': hostRootAvailability,
         'localPlayback': _attachment is LocalPlaybackVolume,
         'volumeFormatVersion': 1,
-        'pathStyle': 'volume-posix',
+        'pathStyle': _storageKind == 'portable'
+            ? 'volume-posix'
+            : 'host-absolute',
       };
     return result;
   }
@@ -478,6 +911,12 @@ class PortableVolumeHost implements MediaEndpoint {
     return _exclusive(() async {
       if (_closed || _host == null || _attachment?.isAttached != true)
         throw MediaError('volume_unavailable', 'Volume unavailable', 503);
+      if (!_rootAvailabilityReady)
+        throw MediaError(
+          'root_availability_required',
+          'Provide /volume/roots first',
+          409,
+        );
       _reads++;
       _emit({'type': 'volume-activity', ...status});
       try {
@@ -499,3 +938,6 @@ class PortableVolumeHost implements MediaEndpoint {
     await _events.close();
   });
 }
+
+/// Compatibility name for embedders using the original portable constructor.
+typedef PortableVolumeHost = ManagedLibraryHost;

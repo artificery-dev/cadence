@@ -151,6 +151,11 @@ class _Systemd extends _Command {
       ..addOption('service-user')
       ..addOption('service-group')
       ..addOption(
+        'availability',
+        allowed: ['filesystem', 'host'],
+        defaultsTo: 'filesystem',
+      )
+      ..addOption(
         'volume',
         help:
             'Existing portable-library mountpoint; initialization is a separate explicit step.',
@@ -174,6 +179,7 @@ class _Systemd extends _Command {
       user: argResults!['service-user'] as String?,
       group: argResults!['service-group'] as String?,
       volume: argResults!['volume'] as String?,
+      availability: argResults!['availability'] as String,
     );
   }
 }

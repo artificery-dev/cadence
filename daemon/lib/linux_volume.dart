@@ -5,6 +5,7 @@ import 'package:file/file.dart';
 import 'package:file/local.dart';
 import 'package:file/chroot.dart';
 import 'volume.dart';
+import 'root_access.dart';
 import 'linux_flags.dart';
 import 'package:cadence_media/src/filesystem.dart' show LocalMediaFiles;
 
@@ -176,5 +177,81 @@ class _LinuxVolumeFileSystem extends ChrootFileSystem
   String localMediaPath(String path) {
     final resolved = file(path).resolveSymbolicLinksSync();
     return delegate.path.join(root, this.path.relative(resolved, from: '/'));
+  }
+}
+
+/// Read-only root lease for local databases indexing removable media. Acquiring
+/// this lease never initializes or writes anything on the removable volume.
+class LinuxRootLease implements RootLease {
+  LinuxRootLease._(this.fd, this.mountPath, this.mountId)
+    : fileSystem = _LinuxVolumeFileSystem('/proc/self/fd/$fd');
+  final int fd;
+  @override
+  final String mountPath;
+  final String mountId;
+  bool _closed = false;
+  @override
+  final FileSystem fileSystem;
+  static LinuxRootLease acquire(String path, String expectedId) {
+    final canonical = io.Directory(path).resolveSymbolicLinksSync();
+    final fd = LinuxVolumeAttachment._string(
+      canonical,
+      (p) => LinuxVolumeAttachment._open(
+        p,
+        LinuxOpenFlags.current.directoryRead,
+        0,
+      ),
+    );
+    if (fd < 0) throw io.FileSystemException('Cannot pin media mount', path);
+    try {
+      final id = io.File('/proc/self/fdinfo/$fd')
+          .readAsLinesSync()
+          .firstWhere((l) => l.startsWith('mnt_id:'))
+          .split(':')
+          .last
+          .trim();
+      if (id != expectedId || !LinuxVolumeAttachment._mounted(canonical, id))
+        throw StateError('Media mount identity changed');
+      return LinuxRootLease._(fd, canonical, id);
+    } catch (_) {
+      LinuxVolumeAttachment._close(fd);
+      rethrow;
+    }
+  }
+
+  @override
+  bool get available {
+    if (_closed || !LinuxVolumeAttachment._mounted(mountPath, mountId))
+      return false;
+    final current = LinuxVolumeAttachment._string(
+      mountPath,
+      (p) => LinuxVolumeAttachment._open(
+        p,
+        LinuxOpenFlags.current.directoryRead,
+        0,
+      ),
+    );
+    if (current < 0) return false;
+    try {
+      return io.File('/proc/self/fdinfo/$current')
+              .readAsLinesSync()
+              .firstWhere((l) => l.startsWith('mnt_id:'))
+              .split(':')
+              .last
+              .trim() ==
+          mountId;
+    } catch (_) {
+      return false;
+    } finally {
+      LinuxVolumeAttachment._close(current);
+    }
+  }
+
+  @override
+  void close() {
+    if (!_closed) {
+      _closed = true;
+      LinuxVolumeAttachment._close(fd);
+    }
   }
 }

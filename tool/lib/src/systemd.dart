@@ -23,7 +23,12 @@ Future<void> renderSystemd(
   String? user,
   String? group,
   String? volume,
+  String availability = 'filesystem',
 }) async {
+  if (!['filesystem', 'host'].contains(availability) ||
+      volume != null && availability == 'host') {
+    throw ToolFailure('Host availability requires local metadata storage', 64);
+  }
   if (!['system', 'user'].contains(scope) ||
       !RegExp(r'^[A-Za-z0-9_-]+$').hasMatch(name)) {
     throw ToolFailure('Invalid service scope or directory name', 64);
@@ -55,6 +60,7 @@ Future<void> renderSystemd(
       'executable': systemdExecutable(executable),
       'name': name,
       'volume': volume == null ? '' : systemdExecutable(volume),
+      'availability': availability,
       'service_user': user ?? '',
       'service_group': group ?? '',
     },

@@ -134,6 +134,7 @@ class PersistentScanQueue {
     }
   }
 
+  bool get isPaused => !_enabled && _active == null;
   bool get hasPending => _jobs.values.any((j) => j['finishedAt'] == null);
   List<Map<String, Object?>> get snapshots {
     final ordered = _jobs.values.toList()
@@ -236,9 +237,9 @@ class PersistentScanQueue {
   }
 
   Future<void> _drain() async {
-    while (!_closing) {
+    while (!_closing && _enabled) {
       final id = await _exclusive<String?>(() async {
-        if (_closing) return null;
+        if (_closing || !_enabled) return null;
         final queued =
             _jobs.values.where((j) => j['state'] == 'queued').toList()..sort(
               (a, b) =>
@@ -281,12 +282,12 @@ class PersistentScanQueue {
       await _exclusive(() async {
         final job = _copy(_jobs[id]!)..addAll(status.toJson());
         final suspend =
-            _closing &&
+            (_closing || !_enabled) &&
             job['cancelRequested'] != true &&
             status.state == ScanState.cancelled;
         _recordAttempt(job, {
           'state': suspend ? 'interrupted' : status.state.name,
-          if (suspend) 'reason': 'host_shutdown',
+          if (suspend) 'reason': _closing ? 'host_shutdown' : 'roots_quiescing',
         });
         if (suspend) _requeue(job);
         await _save(job);
@@ -307,6 +308,14 @@ class PersistentScanQueue {
             'Scan queue halted; restore database writability and restart',
       },
   };
+  Future<void> pause() async {
+    _enabled = false;
+    await _serial;
+    final active = _active;
+    if (active != null) coordinator.cancel(_jobs[active]!['libraryId'] as int);
+    await _runner;
+  }
+
   Future<void> close() async {
     _closing = true;
     await _serial;

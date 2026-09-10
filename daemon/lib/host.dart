@@ -22,6 +22,8 @@ class MediaHost implements MediaEndpoint {
   static final _owners = Expando<bool>();
   final String? cacheDirectory;
   final ScanPolicy policy;
+  bool _requireRootAvailability = false;
+  bool Function(String path)? rootAccessAvailable;
   final bool watchAvailable, nativeAvailable;
   final MediaDatabase db;
   final FileSystem fileSystem;
@@ -51,6 +53,7 @@ class MediaHost implements MediaEndpoint {
     String? cacheDirectory,
     bool nativeAvailable = false,
     bool autoStartJobs = true,
+    bool requireRootAvailability = false,
     ScanPolicy policy = const ScanPolicy(artwork: ArtworkPolicy.deferred),
     ExtractorBuilder buildExtractor = defaultMediaExtractor,
     LibraryWatchService Function(ScanCoordinator)? watch,
@@ -68,6 +71,8 @@ class MediaHost implements MediaEndpoint {
         database,
         buildExtractor: buildExtractor,
         thumbnailSide: policy.thumbnailSide,
+        fileAvailable: (path) =>
+            activeHost?.fileAvailable(path) ?? !requireRootAvailability,
         onArtworkChanged: (fileId) =>
             changed({'type': 'media-artwork-updated', 'fileId': fileId}),
       );
@@ -78,7 +83,9 @@ class MediaHost implements MediaEndpoint {
           buildExtractor: buildExtractor,
           policy: policy,
           onChange: changed,
-          rootAvailable: (path) => availability[path] != false,
+          rootAvailable: (path) =>
+              (availability[path] ?? !requireRootAvailability) &&
+              (activeHost?.rootAccessAvailable?.call(path) ?? true),
         ),
         onFinished: (id) => unawaited(artwork.sweep(id)),
       );
@@ -100,6 +107,7 @@ class MediaHost implements MediaEndpoint {
         nativeAvailable,
       );
       activeHost = host;
+      host._requireRootAvailability = requireRootAvailability;
       await database.customStatement(
         'CREATE TABLE IF NOT EXISTS daemon_jobs (id TEXT PRIMARY KEY, body TEXT NOT NULL)',
       );
@@ -111,6 +119,11 @@ class MediaHost implements MediaEndpoint {
         availability[row.read<String>('path')] =
             row.read<int>('available') != 0;
       }
+      if (requireRootAvailability) {
+        for (final root in await database.select(database.libraryRoots).get()) {
+          availability[root.path] = false;
+        }
+      }
       host._queue = PersistentScanQueue(
         database,
         coordinator,
@@ -120,13 +133,62 @@ class MediaHost implements MediaEndpoint {
         onChange: () => host._emit('change'),
       );
       await host._queue.restore();
-      await service.syncWatchers();
+      if (!requireRootAvailability) await service.syncWatchers();
       host._timer = Timer.periodic(const Duration(milliseconds: 200), (_) {
         if (!host._closed && (host._queue.hasPending || artwork.running))
           host._emit('progress');
       });
       if (autoStartJobs) host.resumeJobs();
       return host;
+    });
+  }
+
+  Future<void> pauseWork() async {
+    await Future.wait([_queue.pause(), service.pauseBackground()]);
+  }
+
+  bool fileAvailable(String path) {
+    if (rootAccessAvailable?.call(path) == false) return false;
+    final matching = availability.entries.where(
+      (e) => e.key == path || fileSystem.path.isWithin(e.key, path),
+    );
+    if (matching.isEmpty) return !_requireRootAvailability;
+    // An unavailable parent beats an available child on a removed device.
+    return matching.every((e) => e.value);
+  }
+
+  Future<void> setRootAvailability(Map<int, bool> values) async {
+    final roots = await db.select(db.libraryRoots).get();
+    if (values.length != roots.length ||
+        roots.any((r) => !values.containsKey(r.id)))
+      throw MediaError(
+        'invalid_request',
+        'Supply every configured root exactly once',
+        400,
+      );
+    final replacement = <String, bool>{};
+    for (final root in roots) {
+      final available = values[root.id]!;
+      if (replacement.containsKey(root.path) &&
+          replacement[root.path] != available)
+        throw MediaError(
+          'invalid_request',
+          'Shared root availability must agree',
+          400,
+        );
+      replacement[root.path] = available;
+    }
+    availability
+      ..clear()
+      ..addAll(replacement);
+    await db.transaction(() async {
+      await db.customStatement('DELETE FROM daemon_roots');
+      for (final entry in replacement.entries) {
+        await db.customStatement('INSERT INTO daemon_roots VALUES (?,?)', [
+          entry.key,
+          entry.value ? 1 : 0,
+        ]);
+      }
     });
   }
 
@@ -278,7 +340,7 @@ class MediaHost implements MediaEndpoint {
           type != FileSystemEntityType.notFound) {
         throw MediaError('invalid_request', 'Root must be a directory', 400);
       }
-      if (_queue.hasPending)
+      if (_queue.hasPending && !_queue.isPaused)
         throw MediaError('scan_conflict', 'Wait for current scan', 409);
       final id = await ScannerRepository(db).addRoot(int.parse(parts[1]), path);
       availability[path] = false;
@@ -325,6 +387,7 @@ class MediaHost implements MediaEndpoint {
     }
     if (method != 'get' &&
         _queue.hasPending &&
+        !(_queue.isPaused && parts.length >= 3 && parts[2] == 'roots') &&
         !(parts.length == 3 && parts[2] == 'scan' && method == 'delete') &&
         parts.firstOrNull != 'artwork') {
       throw MediaError(

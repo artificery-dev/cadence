@@ -31,6 +31,17 @@ class CadenceClient {
     String path, [
     Map<String, Object?>? body,
   ]) => transport.request(method, path, body);
+  Future<VolumeStatus> setRootAvailability({
+    required String expectedId,
+    required String expectedGeneration,
+    required List<RootAvailability> roots,
+  }) async => VolumeStatus.fromJson(
+    await call('post', '/volume/roots', {
+      'expectedId': expectedId,
+      'expectedGeneration': expectedGeneration,
+      'roots': roots.map((r) => r.toJson()).toList(),
+    }),
+  );
   Future<VolumeStatus> volumeStatus() async =>
       VolumeStatus.fromJson(await volume());
   Future<MediaLocation> resolveMedia({

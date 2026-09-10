@@ -3,10 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:cadence_media/cadence_media.dart'
     hide File, Directory, FileSystemEntity;
-import 'package:file/local.dart';
-import 'package:drift/native.dart';
-import 'package:cadenced/host.dart';
-import 'package:cadenced/local_owner.dart';
+import 'package:cadenced/local_store.dart';
 import 'package:cadenced/server.dart';
 import 'package:cadenced/watch.dart';
 import 'package:cadenced/probe.dart';
@@ -42,9 +39,10 @@ Future<void> run(List<String> args) async {
           '--native',
           '--volume',
           '--initialize',
+          '--availability',
         ].contains(args[i])) {
       stderr.writeln(
-        'Usage: cadenced --socket PATH (--volume MOUNT [--initialize true|false] | --database PATH --cache DIR) [--policy lean|full] [--native true|false]',
+        'Usage: cadenced --socket PATH (--volume MOUNT [--initialize true|false] | --database PATH --cache DIR) [--policy lean|full] [--native true|false] [--availability filesystem|host]',
       );
       exitCode = 64;
       return;
@@ -58,6 +56,11 @@ Future<void> run(List<String> args) async {
           : !['--database', '--cache'].every(options.containsKey)) ||
       (!portable && options.containsKey('--initialize')) ||
       !['true', 'false'].contains(options['--initialize'] ?? 'false') ||
+      ![
+        'filesystem',
+        'host',
+      ].contains(options['--availability'] ?? 'filesystem') ||
+      (portable && options['--availability'] == 'host') ||
       !['lean', 'full'].contains(options['--policy'] ?? 'lean') ||
       !['true', 'false'].contains(options['--native'] ?? 'false')) {
     stderr.writeln(
@@ -66,7 +69,6 @@ Future<void> run(List<String> args) async {
     exitCode = 64;
     return;
   }
-  LocalOwner? lock;
   MediaEndpoint? host;
   UnixMediaServer? server;
   final signals = <StreamSubscription<ProcessSignal>>[];
@@ -80,55 +82,49 @@ Future<void> run(List<String> args) async {
         : null;
     if (options['--native'] == 'true' && probe == null)
       throw StateError('Requested native probe could not load');
-    if (portable) {
-      final volume = PortableVolumeHost(
-        attach: ({required initialize}) async => LinuxVolumeAttachment.acquire(
-          options['--volume']!,
-          initialize: initialize,
-        ),
-        initialize: options['--initialize'] == 'true',
-        nativeAvailable: probe != null,
-        policy: options['--policy'] == 'full'
-            ? ScanPolicy.full
-            : const ScanPolicy(artwork: ArtworkPolicy.deferred),
-        buildExtractor: () =>
-            MediaExtractor([...defaultMediaExtractor().tiers, ?probe]),
-      );
-      host = volume;
-      try {
-        await volume.open();
-      } catch (e) {
-        log('volume-unavailable', {'message': '$e'});
-      }
-    } else {
-      lock = LocalOwner.acquire(options['--database']!);
-      Directory(options['--cache']!).createSync(recursive: true);
-      LocalOwner.chmod(options['--cache']!, 448);
-      host = await MediaHost.open(
-        database: MediaDatabase(NativeDatabase(File(lock.path))),
-        fileSystem: const LocalFileSystem(),
-        cacheDirectory: options['--cache'],
-        nativeAvailable: probe != null,
-        autoStartJobs: false,
-        policy: options['--policy'] == 'full'
-            ? ScanPolicy.full
-            : const ScanPolicy(artwork: ArtworkPolicy.deferred),
-        buildExtractor: () =>
-            MediaExtractor([...defaultMediaExtractor().tiers, ?probe]),
-        watch: (coordinator) => LocalLibraryWatchService(
-          coordinator.db,
-          coordinator,
-          submit: (id, dirs) async {
-            try {
-              await host!.request('post', '/libraries/$id/scan');
-              return true;
-            } catch (_) {
-              return false;
-            }
-          },
-          log: (message) => log('watch', {'message': message}),
-        ),
-      );
+    final hostAvailability = options['--availability'] == 'host';
+    final managed = ManagedLibraryHost(
+      attach: ({required initialize}) async => portable
+          ? LinuxVolumeAttachment.acquire(
+              options['--volume']!,
+              initialize: initialize,
+            )
+          : LinuxLocalStore.acquire(
+              options['--database']!,
+              options['--cache']!,
+              hostAvailability: hostAvailability,
+            ),
+      initialize: options['--initialize'] == 'true',
+      hostRootAvailability: hostAvailability,
+      reconcileOnAttach: portable || hostAvailability,
+      nativeAvailable: probe != null,
+      policy: options['--policy'] == 'full'
+          ? ScanPolicy.full
+          : const ScanPolicy(artwork: ArtworkPolicy.deferred),
+      buildExtractor: () =>
+          MediaExtractor([...defaultMediaExtractor().tiers, ?probe]),
+      watch: portable || hostAvailability
+          ? null
+          : (coordinator) => LocalLibraryWatchService(
+              coordinator.db,
+              coordinator,
+              submit: (id, dirs) async {
+                try {
+                  await host!.request('post', '/libraries/$id/scan');
+                  return true;
+                } catch (_) {
+                  return false;
+                }
+              },
+              log: (message) => log('watch', {'message': message}),
+            ),
+    );
+    host = managed;
+    try {
+      await managed.open();
+    } catch (e) {
+      if (!portable) rethrow;
+      log('volume-unavailable', {'message': '$e'});
     }
     server = await UnixMediaServer.bind(host, options['--socket']!);
     final stopped = Completer<void>();
@@ -139,12 +135,11 @@ Future<void> run(List<String> args) async {
         }),
       );
     }
-    if (host is MediaHost) host.resumeJobs();
     log('ready', {
       'apiVersion': 1,
       'socket': options['--socket'],
       'native': probe != null,
-      if (host is PortableVolumeHost) 'volume': host.status,
+      'volume': managed.status,
     });
     await stopped.future;
     log('stopping');
@@ -164,6 +159,5 @@ Future<void> run(List<String> args) async {
     } else {
       await host?.close();
     }
-    lock?.close();
   }
 }
