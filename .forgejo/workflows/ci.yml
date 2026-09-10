@@ -99,6 +99,9 @@ jobs:
           printf '{"auths":{"%s":{"auth":"%s"}}}' "$registry" "$auth" > /kaniko/.docker/config.json
           context="git://${GITHUB_SERVER_URL#*://}/${GITHUB_REPOSITORY}.git#${SOURCE_REF}${SOURCE_SHA:+#$SOURCE_SHA}"
           echo "Building $IMAGE from $context"
+          if [ "$REGISTRY_TOKEN" = "$GIT_PASSWORD" ]; then
+            echo "::notice::Pushing with the workflow token. If the push fails with 401 reqPackageAccess, this instance does not grant workflow tokens package access: add the CI_FORGEJO_REGISTRY_USERNAME and CI_FORGEJO_REGISTRY_TOKEN secrets (an access token with package read/write scope)."
+          fi
           /kaniko/executor \
             --context "$context" \
             --dockerfile toolchain/Containerfile \
