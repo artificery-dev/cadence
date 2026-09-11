@@ -188,6 +188,7 @@ Future<MediaEndpoint> _openHost(_Boot boot) async {
   final probe = ProbeExtractor.tryLoad(searchFirst: boot.probeSearch);
   MediaExtractor buildExtractor() =>
       MediaExtractor([...defaultMediaExtractor().tiers, ?probe]);
+  final hashFile = probe?.sha256 ?? sha256OfFile;
   const policy = ScanPolicy(artwork: ArtworkPolicy.deferred);
   if (!Platform.isLinux) {
     final database = MediaDatabase(NativeDatabase(File(boot.databasePath)));
@@ -198,6 +199,7 @@ Future<MediaEndpoint> _openHost(_Boot boot) async {
       nativeAvailable: probe != null,
       policy: policy,
       buildExtractor: buildExtractor,
+      hashFile: hashFile,
     );
   }
   late final ManagedLibraryHost host;
@@ -208,6 +210,7 @@ Future<MediaEndpoint> _openHost(_Boot boot) async {
     reconcileOnAttach: false,
     policy: policy,
     buildExtractor: buildExtractor,
+    hashFile: hashFile,
     watch: (coordinator) => LocalLibraryWatchService(
       coordinator.db,
       coordinator,

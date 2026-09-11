@@ -8,6 +8,7 @@ import 'package:path/path.dart' as p;
 
 import 'package:cadence_media/src/database/database.dart';
 import 'package:cadence_media/src/kinds.dart';
+import 'package:cadence_media/src/scan/hasher.dart' show sha256OfFile;
 import 'package:cadence_media/src/metadata.dart';
 import 'package:cadence_media/src/extract/extractor.dart';
 import 'package:cadence_media/src/filesystem.dart'
@@ -17,24 +18,31 @@ import 'package:file/local.dart';
 typedef _AbiVersionC = Uint32 Function();
 typedef _AbiVersionDart = int Function();
 typedef _ProbeFileC = Pointer<Utf8> Function(Pointer<Utf8>);
+typedef _HashFileC = Pointer<Utf8> Function(Pointer<Utf8>);
 typedef _FreeStringC = Void Function(Pointer<Utf8>);
 typedef _FreeStringDart = void Function(Pointer<Utf8>);
 
-/// The native probe tier — Rust behind three C symbols, when its library
+/// The ABI generation this loader speaks; the library must answer the same.
+const int _abiVersion = 2;
+
+/// The native probe tier — Rust behind four C symbols, when its library
 /// is around.
 ///
-/// `cadence_abi_version` must answer 1, `cadence_probe_file` takes a path
-/// and returns a JSON envelope (`{"ok": …}` or `{"err": …}`), and
-/// `cadence_free_string` releases the answer. The `ok` payload's `fields`
-/// already speak [MediaMetadata]'s JSON names, so mapping is mostly a
-/// matter of listening: fields in, raw tags into `extra`, artwork
-/// base64-decoded. Legacy fingerprint fields are ignored.
+/// `cadence_abi_version` must answer 2, `cadence_probe_file` takes a path
+/// and returns a JSON envelope (`{"ok": …}` or `{"err": …}`),
+/// `cadence_hash_file` takes a path and answers the file's SHA-256 the
+/// same way, and `cadence_free_string` releases either answer. The probe's
+/// `ok` payload's `fields` already speak [MediaMetadata]'s JSON names, so
+/// mapping is mostly a matter of listening: fields in, raw tags into
+/// `extra`, artwork base64-decoded. Legacy fingerprint fields are ignored.
 ///
 /// Everything about loading lives in this one file, so a future move to
 /// Dart build hooks stays a one-file change.
 class ProbeExtractor implements MetadataExtractor {
-  ProbeExtractor._(this._probeFile, this._freeString);
+  ProbeExtractor._(this._libraryPath, this._probeFile, this._freeString);
 
+  /// Where the library was opened from — what a hashing isolate reopens.
+  final String _libraryPath;
   final _ProbeFileC _probeFile;
   final _FreeStringDart _freeString;
 
@@ -134,17 +142,87 @@ class ProbeExtractor implements MetadataExtractor {
       final abiVersion = library.lookupFunction<_AbiVersionC, _AbiVersionDart>(
         'cadence_abi_version',
       );
-      if (abiVersion() != 1) return null;
+      if (abiVersion() != _abiVersion) return null;
       final probeFile = library.lookupFunction<_ProbeFileC, _ProbeFileC>(
         'cadence_probe_file',
       );
+      // Looked up here only to prove the symbol is there; hashing binds
+      // again on its own isolate.
+      library.lookupFunction<_HashFileC, _HashFileC>('cadence_hash_file');
       final freeString = library.lookupFunction<_FreeStringC, _FreeStringDart>(
         'cadence_free_string',
       );
-      return ProbeExtractor._(probeFile, freeString);
+      return ProbeExtractor._(path, probeFile, freeString);
     } catch (_) {
       return null;
     }
+  }
+
+  /// The path native code may open for [path]: the same string on a plain
+  /// local filesystem, the mapped one behind a [LocalMediaFiles] view,
+  /// and never anything from a virtual filesystem.
+  static String _nativePath(String path) {
+    final fs = mediaFileSystem;
+    // No promotion: LocalMediaFiles is not a FileSystem subtype.
+    if (fs is LocalMediaFiles)
+      return (fs as LocalMediaFiles).localMediaPath(path);
+    if (fs is LocalFileSystem) return path;
+    throw UnsupportedError(
+      'Native probe requires a local filesystem; virtual paths are never passed to native code',
+    );
+  }
+
+  /// The file's SHA-256 as lowercase hex, streamed by the native library —
+  /// the identity hash [sha256OfFile] computes in pure Dart, several times
+  /// faster. The read runs on a fresh isolate so the event loop keeps
+  /// serving while a movie goes by. Throws a [FileSystemException] when
+  /// the file cannot be read, a [StateError] on any other native failure.
+  ///
+  /// Shaped to stand in for [sha256OfFile] as the scanner's `hashFile`.
+  Future<String> sha256(String path) async {
+    final nativePath = _nativePath(path);
+    final libraryPath = _libraryPath;
+    return Isolate.run(
+      () => _sha256Sync(libraryPath, nativePath),
+      debugName: 'cadence-hash',
+    );
+  }
+
+  static String _sha256Sync(String libraryPath, String nativePath) {
+    final library = DynamicLibrary.open(libraryPath);
+    final hashFile = library.lookupFunction<_HashFileC, _HashFileC>(
+      'cadence_hash_file',
+    );
+    final freeString = library.lookupFunction<_FreeStringC, _FreeStringDart>(
+      'cadence_free_string',
+    );
+    final pathPointer = nativePath.toNativeUtf8();
+    final Pointer<Utf8> answer;
+    try {
+      answer = hashFile(pathPointer);
+    } finally {
+      malloc.free(pathPointer);
+    }
+    if (answer == nullptr) throw StateError('Native hash returned nothing');
+    final String payload;
+    try {
+      payload = answer.toDartString();
+    } finally {
+      freeString(answer);
+    }
+    final envelope = jsonDecode(payload);
+    if (envelope is! Map) throw StateError('Native hash answered $payload');
+    if (envelope['err'] case final Map error) {
+      final code = error['code'], message = '${error['msg']}';
+      if (code == 'io') throw FileSystemException(message, nativePath);
+      throw StateError('Native hash failed ($code): $message');
+    }
+    if (envelope['ok'] case {
+      'sha256': final String hex,
+    } when hex.length == 64) {
+      return hex;
+    }
+    throw StateError('Native hash answered $payload');
   }
 
   @override
@@ -157,15 +235,7 @@ class ProbeExtractor implements MetadataExtractor {
 
   @override
   Future<ExtractionResult?> extract(String path, MediaKind kind) async {
-    if (mediaFileSystem is! LocalFileSystem &&
-        mediaFileSystem is! LocalMediaFiles)
-      throw UnsupportedError(
-        'Native probe requires a local filesystem; virtual paths are never passed to native code',
-      );
-    final fs = mediaFileSystem;
-    final nativePath = fs is LocalMediaFiles
-        ? (fs as LocalMediaFiles).localMediaPath(path)
-        : path;
+    final nativePath = _nativePath(path);
     final pathPointer = nativePath.toNativeUtf8();
     final Pointer<Utf8> answer;
     try {

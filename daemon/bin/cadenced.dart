@@ -161,6 +161,7 @@ Future<void> run(List<String> args) async {
           : const ScanPolicy(artwork: ArtworkPolicy.deferred),
       buildExtractor: () =>
           MediaExtractor([...defaultMediaExtractor().tiers, ?probe]),
+      hashFile: probe?.sha256 ?? sha256OfFile,
       watch: rooted || hostAvailability
           ? null
           : (coordinator) => LocalLibraryWatchService(

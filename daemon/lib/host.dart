@@ -59,6 +59,7 @@ class MediaHost implements MediaEndpoint {
     bool requireRootAvailability = false,
     ScanPolicy policy = const ScanPolicy(artwork: ArtworkPolicy.deferred),
     ExtractorBuilder buildExtractor = defaultMediaExtractor,
+    Future<String> Function(String path) hashFile = sha256OfFile,
     LibraryWatchService Function(ScanCoordinator)? watch,
   }) async {
     if (_owners[database] == true)
@@ -84,6 +85,7 @@ class MediaHost implements MediaEndpoint {
         scanner: LibraryScanner(
           database,
           buildExtractor: buildExtractor,
+          hashFile: hashFile,
           policy: policy,
           onChange: changed,
           rootAvailable: (path) =>
