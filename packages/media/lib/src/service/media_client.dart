@@ -67,7 +67,7 @@ class ScanStatus {
   });
 
   factory ScanStatus.fromJson(Map<String, Object?> json) => ScanStatus(
-    state: stateFromWire(json['state'] as String),
+    state: ScanState.values.byName(json['state'] as String),
     seen: json['seen'] as int? ?? 0,
     changed: json['changed'] as int? ?? 0,
     discovered: json['discovered'] as int? ?? 0,
@@ -97,15 +97,6 @@ class ScanStatus {
     },
     elapsed: Duration(milliseconds: json['elapsedMs'] as int? ?? 0),
   );
-
-  /// A hosted scan queue reports job states the coordinator never speaks —
-  /// `queued` before the walk begins, `interrupted` when a restart will
-  /// pick the job back up. Both mean the scan is still owed, so both read
-  /// as [ScanState.walking]: running, nothing counted yet.
-  static ScanState stateFromWire(String state) => switch (state) {
-    'queued' || 'interrupted' => ScanState.walking,
-    _ => ScanState.values.byName(state),
-  };
 
   final ScanState state;
   final int seen;

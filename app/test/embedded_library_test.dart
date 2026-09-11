@@ -3,7 +3,6 @@ import 'dart:io';
 import 'package:cadence/src/data/embedded_library.dart';
 import 'package:cadence/src/data/library_connection.dart';
 import 'package:cadence_client/cadence_client.dart';
-import 'package:cadence_media/cadence_media.dart' show LibraryType;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 

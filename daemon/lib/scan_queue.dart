@@ -5,6 +5,11 @@ import 'package:cadence_client/cadence_client.dart';
 
 /// Durable FIFO of logical scans. Attempts reconcile the library again; committed
 /// batches are retained. Only explicit cancellation makes shutdown work terminal.
+///
+/// A job's `state` is the wire's scan state: always `ScanState.<x>.name`,
+/// never a literal, so what a client parses with `ScanState.values.byName`
+/// is by construction a member — the queue's own `queued` and
+/// `interrupted` included.
 class PersistentScanQueue {
   PersistentScanQueue(
     this.db,
@@ -82,7 +87,7 @@ class PersistentScanQueue {
     for (final key in _progressKeys) {
       job.remove(key);
     }
-    job['state'] = 'queued';
+    job['state'] = ScanState.queued.name;
   }
 
   Future<void> restore() async {
@@ -107,15 +112,16 @@ class PersistentScanQueue {
         throw StateError('Unsupported job journal version');
       job['journalVersion'] = 2;
       job['queueOrder'] ??= ++_order;
-      job['attemptCount'] ??= job['state'] == 'queued' ? 0 : 1;
+      job['attemptCount'] ??= job['state'] == ScanState.queued.name ? 0 : 1;
       job['attempts'] ??= <Object?>[];
       // Also migrate interrupted records produced by the initial no-resume host.
-      if (job['finishedAt'] == null || job['state'] == 'interrupted') {
-        if (job['state'] != 'queued') {
+      if (job['finishedAt'] == null ||
+          job['state'] == ScanState.interrupted.name) {
+        if (job['state'] != ScanState.queued.name) {
           _recordAttempt(job, {
             'state': job['cancelRequested'] == true
-                ? 'cancelled'
-                : 'interrupted',
+                ? ScanState.cancelled.name
+                : ScanState.interrupted.name,
             'finishedAt':
                 job['finishedAt'] ?? DateTime.now().toUtc().toIso8601String(),
             'reason': 'process_restart',
@@ -123,7 +129,7 @@ class PersistentScanQueue {
           });
         }
         if (job['cancelRequested'] == true) {
-          job['state'] = 'cancelled';
+          job['state'] = ScanState.cancelled.name;
           job['finishedAt'] = DateTime.now().toUtc().toIso8601String();
         } else {
           _requeue(job);
@@ -183,7 +189,7 @@ class PersistentScanQueue {
       'jobId': '$epoch-$order',
       'libraryId': library,
       'queueOrder': order,
-      'state': 'queued',
+      'state': ScanState.queued.name,
       'attemptCount': 0,
       'attempts': <Object?>[],
       'submittedAt': DateTime.now().toUtc().toIso8601String(),
@@ -201,7 +207,7 @@ class PersistentScanQueue {
     if (existing['finishedAt'] != null) return _copy(existing);
     final job = _copy(existing)..['cancelRequested'] = true;
     if (_active != id) {
-      job['state'] = 'cancelled';
+      job['state'] = ScanState.cancelled.name;
       job['finishedAt'] = DateTime.now().toUtc().toIso8601String();
     }
     // Persist intent before signalling the scanner or acknowledging cancellation.
@@ -241,14 +247,17 @@ class PersistentScanQueue {
       final id = await _exclusive<String?>(() async {
         if (_closing || !_enabled) return null;
         final queued =
-            _jobs.values.where((j) => j['state'] == 'queued').toList()..sort(
-              (a, b) =>
-                  (a['queueOrder'] as int).compareTo(b['queueOrder'] as int),
-            );
+            _jobs.values
+                .where((j) => j['state'] == ScanState.queued.name)
+                .toList()
+              ..sort(
+                (a, b) =>
+                    (a['queueOrder'] as int).compareTo(b['queueOrder'] as int),
+              );
         if (queued.isEmpty) return null;
         final job = _copy(queued.first);
         final id = job['jobId'] as String;
-        job['state'] = 'walking';
+        job['state'] = ScanState.walking.name;
         job['attemptCount'] = (job['attemptCount'] as int) + 1;
         job['startedAt'] = DateTime.now().toUtc().toIso8601String();
         job['effectivePolicy'] = {
@@ -264,11 +273,11 @@ class PersistentScanQueue {
         } catch (error) {
           final failed = _copy(job)
             ..addAll({
-              'state': 'failed',
+              'state': ScanState.failed.name,
               'finishedAt': DateTime.now().toUtc().toIso8601String(),
               'error': {'code': 'scan_failed', 'message': '$error'},
             });
-          _recordAttempt(failed, {'state': 'failed'});
+          _recordAttempt(failed, {'state': ScanState.failed.name});
           await _save(failed);
           _jobs[id] = failed;
           _active = null;
@@ -286,7 +295,7 @@ class PersistentScanQueue {
             job['cancelRequested'] != true &&
             status.state == ScanState.cancelled;
         _recordAttempt(job, {
-          'state': suspend ? 'interrupted' : status.state.name,
+          'state': suspend ? ScanState.interrupted.name : status.state.name,
           if (suspend) 'reason': _closing ? 'host_shutdown' : 'roots_quiescing',
         });
         if (suspend) _requeue(job);

@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'src/volume.dart';
+export 'package:cadence_types/cadence_types.dart';
 export 'src/volume.dart';
 
 /// Version 1 transports exchange JSON values; artwork has a separate byte path.

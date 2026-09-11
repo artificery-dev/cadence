@@ -91,6 +91,16 @@ void main() {
       expect(await client.items(libs[0]), hasLength(1));
       expect(await client.items(libs[1]), hasLength(1));
       expect(await client.items(libs[2]), isEmpty);
+      // Every state the queue put on the wire is a ScanState member — in
+      // the job records and in their attempt histories alike — so a client
+      // parsing with ScanState.values.byName never throws on one.
+      for (final job in (await client.snapshot())['jobs'] as List) {
+        final record = (job as Map).cast<String, Object?>();
+        ScanState.values.byName(record['state'] as String);
+        for (final attempt in record['attempts'] as List) {
+          ScanState.values.byName((attempt as Map)['state'] as String);
+        }
+      }
     },
   );
 

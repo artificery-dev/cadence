@@ -173,7 +173,7 @@ class _Check extends _Command {
     noRest();
     await context.run(context.dartExecutable, ['pub', 'get']);
     await context.run(context.dartExecutable, ['analyze']);
-    for (final directory in ['tool', 'packages/media']) {
+    for (final directory in ['tool', 'packages/types', 'packages/media']) {
       await context.run(context.dartExecutable, ['test'], directory: directory);
     }
     await context.run(context.dartExecutable, [

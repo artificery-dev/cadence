@@ -846,6 +846,8 @@ class _AppShellState extends State<AppShell> {
           message: Text('Scan of $name failed.'),
         );
       case ScanState.idle:
+      case ScanState.queued:
+      case ScanState.interrupted:
       case ScanState.walking:
       case ScanState.discovering:
       case ScanState.extracting:

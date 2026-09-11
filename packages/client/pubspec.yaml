@@ -1,5 +1,10 @@
 name: cadence_client
 version: 1.0.0
+publish_to: none
 resolution: workspace
 environment:
   sdk: ^3.12.2
+dependencies:
+  # The enums the wire contract is typed with; re-exported from here.
+  cadence_types:
+    path: ../types

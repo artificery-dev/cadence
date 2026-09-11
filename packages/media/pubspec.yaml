@@ -11,6 +11,9 @@ environment:
 resolution: workspace
 
 dependencies:
+  # The enums the wire contract is typed with; re-exported from here.
+  cadence_types:
+    path: ../types
   file: ^7.0.1
   drift: ^2.34.0
   # Extraction: the pure-Dart tier.

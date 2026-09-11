@@ -70,13 +70,20 @@ packages:
       relative: true
     source: path
     version: "0.1.0"
+  cadence_types:
+    dependency: transitive
+    description:
+      path: "../packages/types"
+      relative: true
+    source: path
+    version: "0.1.0"
   cadenced:
     dependency: "direct main"
     description:
       path: "../daemon"
       relative: true
     source: path
-    version: "0.9.1"
+    version: "0.10.0"
   characters:
     dependency: transitive
     description:

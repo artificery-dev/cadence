@@ -1,42 +1,13 @@
 import 'dart:async';
 
+import 'package:cadence_types/cadence_types.dart';
+
 import '../database/database.dart';
 import 'scanner.dart';
 
-/// Where a library's scan stands. The first three are a scan in motion;
-/// the last four are how it ended — or, for [idle], that it never began.
-enum ScanState {
-  /// No scan has run since the service came up.
-  idle,
-
-  /// Walking roots and diffing against the database.
-  walking,
-
-  /// Full hashing and minimal, immediately browseable library insertion.
-  discovering,
-
-  /// Metadata enrichment of already discoverable files.
-  extracting,
-
-  /// Missing marks, sidecars, folder art — the epilogue.
-  finishing,
-
-  /// Finished whole.
-  done,
-
-  /// Threw rather than finished; the errors list holds the why.
-  failed,
-
-  /// Stopped on request. Whatever landed before the stop stays landed.
-  cancelled;
-
-  /// Whether a scan is actually in motion.
-  bool get running =>
-      this == walking ||
-      this == discovering ||
-      this == extracting ||
-      this == finishing;
-}
+// The state enum lives in cadence_types, the wire contract's home; it is
+// re-exported here so the public API of this package does not move.
+export 'package:cadence_types/cadence_types.dart' show ScanState;
 
 /// One look at a library's scan: the state, the counters, the clock. The
 /// coordinator hands these out during a scan and keeps the last one after,

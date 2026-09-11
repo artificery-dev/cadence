@@ -42,9 +42,13 @@ class MediaHost implements MediaEndpoint {
   Future<void> _serial = Future.value();
   Map<String, Object?> get activity => {
     'runningJobs': _queue.snapshots
-        .where((j) => j['finishedAt'] == null && j['state'] != 'queued')
+        .where(
+          (j) => j['finishedAt'] == null && j['state'] != ScanState.queued.name,
+        )
         .length,
-    'queuedJobs': _queue.snapshots.where((j) => j['state'] == 'queued').length,
+    'queuedJobs': _queue.snapshots
+        .where((j) => j['state'] == ScanState.queued.name)
+        .length,
     'artwork': service.artworkStatus,
   };
   void resumeJobs() => _queue.start();
