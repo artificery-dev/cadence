@@ -11,8 +11,8 @@ use lofty::file::AudioFile;
 use matroska::{Settings, TagValue, Tracktype};
 
 use super::image_probe::entry_value_json;
-use crate::report::Report;
 use super::tagmap;
+use crate::report::Report;
 use crate::{ProbeError, Result};
 
 pub fn probe(path: &Path, ext: &str) -> Result<Report> {

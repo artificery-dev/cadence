@@ -431,7 +431,10 @@ fn map_ilst_common(r: &mut Report, atom: &Atom<'_>) -> bool {
             let raw_key = ilst_extra_key(atom.ident());
             let norm = norm_key(name);
             let Some(text) = atom_text(atom) else {
-                r.extra(&raw_key, atom.data().next().map(atom_value).unwrap_or(Value::Null));
+                r.extra(
+                    &raw_key,
+                    atom.data().next().map(atom_value).unwrap_or(Value::Null),
+                );
                 return true;
             };
             if !apply_special(r, &raw_key, &norm, &text) {
@@ -537,7 +540,10 @@ pub fn map_ilst_audio(r: &mut Report, ilst: &Ilst) {
             }
             _ => {
                 let key = ilst_extra_key(atom.ident());
-                r.extra(&key, atom.data().next().map(atom_value).unwrap_or(Value::Null));
+                r.extra(
+                    &key,
+                    atom.data().next().map(atom_value).unwrap_or(Value::Null),
+                );
             }
         }
     }
@@ -575,7 +581,10 @@ pub fn map_ilst_video(r: &mut Report, ilst: &Ilst) {
             }
             _ => {
                 let key = ilst_extra_key(atom.ident());
-                r.extra(&key, atom.data().next().map(atom_value).unwrap_or(Value::Null));
+                r.extra(
+                    &key,
+                    atom.data().next().map(atom_value).unwrap_or(Value::Null),
+                );
             }
         }
     }

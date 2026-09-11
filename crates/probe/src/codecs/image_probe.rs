@@ -40,10 +40,7 @@ fn map_exif(r: &mut Report, exif: &nom_exif::Exif) {
     if let Some(description) = text(ExifTag::ImageDescription) {
         r.set_str("description", description);
     }
-    if let Some(orientation) = exif
-        .get(ExifTag::Orientation)
-        .and_then(EntryValue::as_u32)
-    {
+    if let Some(orientation) = exif.get(ExifTag::Orientation).and_then(EntryValue::as_u32) {
         r.set_int("orientation", i64::from(orientation));
     }
     if let Some(iso) = exif
@@ -52,10 +49,7 @@ fn map_exif(r: &mut Report, exif: &nom_exif::Exif) {
     {
         r.set_int("iso", i64::from(iso));
     }
-    if let Some(exposure) = exif
-        .get(ExifTag::ExposureTime)
-        .and_then(EntryValue::as_f64)
-    {
+    if let Some(exposure) = exif.get(ExifTag::ExposureTime).and_then(EntryValue::as_f64) {
         r.set_f64("exposureSeconds", exposure);
     }
     if let Some(f_number) = exif.get(ExifTag::FNumber).and_then(EntryValue::as_f64) {
@@ -133,7 +127,10 @@ fn exif_datetime_iso(value: &EntryValue) -> Option<String> {
     }
     let date = rendered[..10].replace(':', "-");
     let time = &rendered[11..19];
-    let offset: String = rendered[19..].chars().filter(|c| !c.is_whitespace()).collect();
+    let offset: String = rendered[19..]
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
     Some(format!("{date}T{time}{offset}"))
 }
 

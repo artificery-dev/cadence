@@ -16,8 +16,8 @@ use lofty::mp4::Mp4Codec;
 use lofty::ogg::OggPictureStorage;
 use lofty::properties::FileProperties;
 
-use crate::report::Report;
 use super::tagmap;
+use crate::report::Report;
 use crate::{ProbeError, Result};
 
 pub fn probe(path: &Path, ext: &str) -> Result<Report> {
@@ -78,7 +78,7 @@ fn mp3(path: &Path, r: &mut Report) -> Result<()> {
     if let Some(tag) = file.id3v1() {
         tagmap::map_id3v1(r, tag);
     }
-    set_props(r, &file.properties().clone().into(), "MP3", false);
+    set_props(r, &(*file.properties()).into(), "MP3", false);
     Ok(())
 }
 
@@ -92,7 +92,7 @@ fn flac(path: &Path, r: &mut Report) -> Result<()> {
         tagmap::map_id3v2(r, tag);
     }
     tagmap::flac_pictures(r, file.pictures());
-    set_props(r, &file.properties().clone().into(), "FLAC", true);
+    set_props(r, &(*file.properties()).into(), "FLAC", true);
     Ok(())
 }
 
@@ -100,7 +100,7 @@ fn vorbis(path: &Path, r: &mut Report) -> Result<()> {
     let file = lofty::ogg::VorbisFile::read_from(&mut reader(path)?, ParseOptions::new())?;
     tagmap::map_vorbis(r, file.vorbis_comments());
     tagmap::flac_pictures(r, file.vorbis_comments().pictures());
-    set_props(r, &file.properties().clone().into(), "Vorbis", false);
+    set_props(r, &(*file.properties()).into(), "Vorbis", false);
     Ok(())
 }
 
@@ -108,7 +108,7 @@ fn opus(path: &Path, r: &mut Report) -> Result<()> {
     let file = lofty::ogg::OpusFile::read_from(&mut reader(path)?, ParseOptions::new())?;
     tagmap::map_vorbis(r, file.vorbis_comments());
     tagmap::flac_pictures(r, file.vorbis_comments().pictures());
-    set_props(r, &file.properties().clone().into(), "Opus", false);
+    set_props(r, &(*file.properties()).into(), "Opus", false);
     Ok(())
 }
 
@@ -148,7 +148,7 @@ fn aac(path: &Path, r: &mut Report) -> Result<()> {
     if let Some(tag) = file.id3v1() {
         tagmap::map_id3v1(r, tag);
     }
-    set_props(r, &file.properties().clone().into(), "AAC", false);
+    set_props(r, &(*file.properties()).into(), "AAC", false);
     Ok(())
 }
 
@@ -160,7 +160,7 @@ fn wav(path: &Path, r: &mut Report) -> Result<()> {
     if let Some(tag) = file.riff_info() {
         tagmap::map_riff_info(r, tag);
     }
-    set_props(r, &file.properties().clone().into(), "PCM", true);
+    set_props(r, &(*file.properties()).into(), "PCM", true);
     Ok(())
 }
 
@@ -199,6 +199,6 @@ fn wavpack(path: &Path, r: &mut Report) -> Result<()> {
     if let Some(tag) = file.id3v1() {
         tagmap::map_id3v1(r, tag);
     }
-    set_props(r, &file.properties().clone().into(), "WavPack", true);
+    set_props(r, &(*file.properties()).into(), "WavPack", true);
     Ok(())
 }

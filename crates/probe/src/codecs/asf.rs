@@ -9,8 +9,8 @@ use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::Path;
 
-use crate::report::Report;
 use super::tagmap::apply_vorbis_key;
+use crate::report::Report;
 use crate::{ProbeError, Result};
 
 const HEADER_OBJECT: [u8; 16] = [
@@ -43,15 +43,16 @@ fn u32_at(data: &[u8], at: usize) -> Option<u32> {
 }
 
 fn u64_at(data: &[u8], at: usize) -> Option<u64> {
-    data.get(at..at + 8).map(|b| {
-        u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]])
-    })
+    data.get(at..at + 8)
+        .map(|b| u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]))
 }
 
 /// UTF-16LE with the trailing NUL ASF loves, rendered as a Rust string.
 fn utf16le(data: &[u8]) -> String {
     let units: Vec<u16> = data
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
         .collect();
     String::from_utf16_lossy(&units)
@@ -74,7 +75,7 @@ pub fn probe(path: &Path, r: &mut Report) -> Result<()> {
             break;
         }
         let size = u64_at(&object_header, 16).unwrap_or(0);
-        if size < 24 || size > 16 * 1024 * 1024 {
+        if !(24..=16 * 1024 * 1024).contains(&size) {
             break;
         }
         let mut data = vec![0u8; (size - 24) as usize];
@@ -157,7 +158,10 @@ fn extended_content(data: &[u8], r: &mut Report) {
         at += value_len;
         let value = match value_type {
             0 => utf16le(value_bytes),
-            2 => u32_at(value_bytes, 0).map(|v| v != 0).unwrap_or(false).to_string(),
+            2 => u32_at(value_bytes, 0)
+                .map(|v| v != 0)
+                .unwrap_or(false)
+                .to_string(),
             3 => u32_at(value_bytes, 0).unwrap_or(0).to_string(),
             4 => u64_at(value_bytes, 0).unwrap_or(0).to_string(),
             5 => u16_at(value_bytes, 0).unwrap_or(0).to_string(),

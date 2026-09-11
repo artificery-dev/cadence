@@ -163,8 +163,10 @@ mod tests {
         ))
         .expect("mjpeg.avi fixture missing");
         let dir = std::env::temp_dir();
-        for (name, cut) in [("cadence_avi_10.avi", whole.len() / 10),
-                            ("cadence_avi_50.avi", whole.len() / 2)] {
+        for (name, cut) in [
+            ("cadence_avi_10.avi", whole.len() / 10),
+            ("cadence_avi_50.avi", whole.len() / 2),
+        ] {
             let path = dir.join(name);
             std::fs::write(&path, &whole[..cut]).unwrap();
             let mut r = Report::new("video");

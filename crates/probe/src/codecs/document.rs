@@ -67,7 +67,9 @@ fn resolve<'a>(doc: &'a Document, object: &'a Object) -> lopdf::Result<&'a Objec
 fn pdf_string(bytes: &[u8]) -> String {
     if bytes.len() >= 2 && bytes[0] == 0xfe && bytes[1] == 0xff {
         let units: Vec<u16> = bytes[2..]
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
             .collect();
         String::from_utf16_lossy(&units)
@@ -81,8 +83,7 @@ fn pdf_string(bytes: &[u8]) -> String {
 
 fn epub(path: &Path) -> Result<Report> {
     let mut r = Report::new("document");
-    let book =
-        rbook::Epub::open(path).map_err(|e| ProbeError::parse(format!("epub: {e}")))?;
+    let book = rbook::Epub::open(path).map_err(|e| ProbeError::parse(format!("epub: {e}")))?;
     let metadata = book.metadata();
 
     if let Some(title) = metadata.title() {
