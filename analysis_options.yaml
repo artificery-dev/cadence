@@ -1,10 +1,8 @@
 # The workspace is pure Dart; the Flutter app in app/ resolves on its own
-# (it needs the Flutter SDK, which the daemon's toolchain does not carry)
+# (it needs the Flutter SDK, which the pure-Dart workspace does not use)
 # and is analyzed from inside app/ with `flutter analyze`.
 analyzer:
   exclude:
     - app/**
-    # Build output, including the toolchain container's own copy of the
-    # app's package resolution (build/container), which is Dart the
-    # workspace must not analyze.
+    # Build output, which the workspace must not analyze.
     - build/**

@@ -1,32 +1,34 @@
 # Packaging cadenced
 
 Everything here is produced by the workspace tool (`tool/bin/cadence.dart`)
-running inside the toolchain container (`toolchain/Containerfile`), which is
-also what `.forgejo/workflows/ci.yml` runs. From the repository root:
+running inside the shared toolbox image
+(https://git.artificery.dev/artificery/toolbox), which is also what
+`.forgejo/workflows/ci.yml` runs. From the repository root:
 
 ```sh
 toolchain/run.sh dart pub get --enforce-lockfile
 toolchain/run.sh cadence build --arch armhf
 toolchain/run.sh cadence package bundle \
   --bundle build/cli/armhf/bundle --arch armhf \
-  --source-commit "$(git rev-parse HEAD)" --dart-version 3.13.2 \
+  --source-commit "$(git rev-parse HEAD)" --dart-version 3.13.3 \
   --output build/dist/cadenced-1.0.0-linux-armhf.tar.gz
 toolchain/run.sh cadence package deb \
   --bundle build/cli/armhf/bundle --arch armhf --version 1.0.0 \
   --maintainer 'Name <email>' --output build/dist
 ```
 
-Inside the image `cadence` is the AOT-compiled workspace tool (outside it,
-`dart run tool/bin/cadence.dart` is the same program; it treats the current
-directory as the workspace when compiled, or `CADENCE_ROOT` when set).
+`toolchain/run.sh` is a thin wrapper over the toolbox's own `run.sh`,
+expected at `~/Projects/toolbox` (or `TOOLBOX_DIR`): it mounts the checkout
+at its real path, runs the command as the calling user, and keeps HOME and
+the cargo home per project under `~/.local/state/toolbox`. A leading
+`cadence` runs the tool from source, since the image carries no compiled
+copy (`dart run tool/bin/cadence.dart` is the same program; compiled, it
+treats the current directory as the workspace, or `CADENCE_ROOT` when set).
 `--arch` accepts `amd64`, `arm64` and `armhf`; without it `build` targets the
-host into `build/cli`. The container tag comes from `toolchain/digest.sh`,
-which covers `toolchain/`, the tool's sources, the root pubspec and the
-lockfile (not the other members' pubspecs, so a version bump does not
-rebuild the image), so editing any of them rebuilds the image on the next
-run; `toolchain/run.sh
---shell` opens a shell inside it. Set `CADENCE_CONTAINER_ENGINE=docker` to use
-Docker instead of podman.
+host into `build/cli`. The toolbox builds `localhost/toolbox:latest` from its
+checkout the first time; `TOOLBOX_IMAGE=git.artificery.dev/artificery/toolbox:<tag>`
+uses the registry copy CI pins instead, and `toolchain/run.sh --shell` opens
+a shell inside it.
 
 `cadence check` builds the host bundle before the daemon integration suites
 and points them at it through `CADENCE_VOLUME_EXECUTABLE`, so the daemons
@@ -72,7 +74,7 @@ with `dpkg-deb --root-owner-group`. The package:
 - declares `libc6 (>= 2.NN)` from the newest glibc symbol version any shipped
   ELF file binds to, plus `libgcc-s1` and `adduser`.
 
-The toolchain image is Debian bookworm so cross-linked binaries need nothing
+The toolbox image is Debian bookworm so cross-linked binaries need nothing
 newer than glibc 2.36, which bookworm-based targets provide.
 
 Versions follow `daemon/pubspec.yaml`, and `app/pubspec.yaml` must carry the
@@ -94,44 +96,24 @@ The desktop app's own Debian package comes from `cadence package app-deb`
 (see `app/README.md`); it recommends this one rather than bundling a daemon.
 
 The desktop app has two jobs of its own in the same image — which carries
-the pinned stable Flutter SDK and the Linux desktop build dependencies
-(GTK, clang/cmake/ninja, libmpv, epoxy) for it — running side by side once
-the image is resolved: one analyzes and tests the app (`cadence app
-check`), the other builds it (`cadence app build`) and saves the bundle
+the current stable Flutter SDK under FVM and the Linux desktop build
+dependencies (GTK, clang/cmake/ninja, libmpv, epoxy) for it — running side
+by side with the daemon's check: one analyzes and tests the app (`cadence
+app check`), the other builds it (`cadence app build`) and saves the bundle
 tarball (with `cadenced` inside) and the app's Debian package as the
 `cadence-app-amd64` artifact; releases attach them beside the daemon
-packages. Pushes to `develop` and `main` run every job but publish
-nothing.
+packages. Pushes to `main` run every job but publish nothing.
 
-The jobs run on the `linux-amd64-container` runners,
-which execute every job inside a container with no docker socket and no
-privileges. The first job computes the toolchain digest (`toolchain/digest.sh`, the
-same formula `toolchain/run.sh` uses) and asks the instance's container registry
-whether `<host>/<owner>/cadence-toolchain:<digest>` exists; if not, a kaniko
-job builds `toolchain/Containerfile` from the repository archive (context:
-the repository root, trimmed by `.dockerignore`) and pushes it. The check job and one build job per architecture then run inside that
-image, save the tarball and `.deb` of each architecture as artifacts, and on
-a `v*` tag a release is published with all six files attached.
-
-Pushing the image needs package write access, which Forgejo does not grant
-the workflow token (GitHub's `permissions:` block is ignored). The workflow
-therefore uses an Authorized Integration: with `enable-openid-connect: true`
-it requests a short-lived JWT that the container registry accepts as a
-Basic-auth password. One-time setup by the integration's owner:
-
-1. User settings > Authorized Integrations > Add authorized integration >
-   Forgejo Actions (Local). Select the repository `artificery/cadence`, set
-   the workflow file to `ci.yml`, leave the git reference and events empty
-   so `ci`, `main`, tags and pull requests all qualify, choose "All (public,
-   private, and limited)" for repository and organization access, and grant
-   only `package` = "Read and write".
-2. Store the audience it shows, which is not secret, as the repository
-   variable `CADENCE_REGISTRY_AUDIENCE` (`fj actions variables create
-   CADENCE_REGISTRY_AUDIENCE u:1:...`).
-
-The `CI_FORGEJO_REGISTRY_USERNAME` / `CI_FORGEJO_REGISTRY_TOKEN` secrets (an
-access token with package scope, the outsized convention) take precedence
-when set. The credential step verifies push access against the registry's
-token endpoint before kaniko starts and says which source it used.
-Changing the toolchain image is a normal commit: the new digest is built on
-the next run and older tags stay in the registry until pruned.
+The jobs run on the `linux-amd64-container` runners, which execute every
+job inside a container with no docker socket and no privileges. Every job
+runs inside the toolbox image, pinned in the workflow by the first twelve
+characters of the toolbox commit that built it (one `sed` bumps every
+`container: image:` line together; the container key cannot read `env`).
+The image is private to the instance, so jobs pull it with the workflow
+token, or with the `CI_FORGEJO_REGISTRY_USERNAME` /
+`CI_FORGEJO_REGISTRY_TOKEN` secrets when set. Each job resolves the
+workspace, compiles the tool to `build/bin/cadence`, and runs it; the build
+jobs check every shipped ELF file with `file` against the target
+architecture, since some Dart SDKs have packaged an x86-64 launcher for
+cross builds. On a `v*` tag a release is published with all six daemon
+files and the two app files attached.

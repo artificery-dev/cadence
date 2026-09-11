@@ -3,7 +3,7 @@ import 'build.dart';
 import 'context.dart';
 
 /// The Flutter desktop app lives in `app/`, outside the pub workspace: it
-/// needs the Flutter SDK, which the daemon's toolchain does not carry.
+/// needs the Flutter SDK, which the pure-Dart workspace does not use.
 /// These commands drive it with `flutter` and marry its Linux bundle to a
 /// `cadence build` bundle, so the packaged app can install `cadenced`.
 const appDirectory = 'app';

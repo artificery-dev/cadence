@@ -3,160 +3,44 @@
 # build the Flutter desktop app for Linux amd64 with cadenced bundled.
 #
 # The runners are container-only (no docker socket, unprivileged), so every
-# job runs inside an image. The check and build jobs run inside the toolchain
-# image from toolchain/Containerfile — which carries the AOT-compiled
-# workspace tool as `cadence` — and this workflow builds that image with
-# kaniko and pushes it to this Forgejo instance's container registry the
-# first time a given toolchain/digest.sh value is seen; later runs find the
-# tag and skip straight to using it.
+# job runs inside an image: the shared toolbox
+# (https://git.artificery.dev/artificery/toolbox), which carries the Dart
+# SDK, Rust with the cross targets, the cross compilers, Flutter and the
+# desktop build libraries. It is pinned by the first twelve characters of
+# the toolbox commit that built it, on every `container: image:` line below
+# (the container key cannot read `env`), so bump them together:
 #
-# Pushing that image needs package write access, which Forgejo does not give
-# the workflow token (GitHub's `permissions:` block is ignored here). The
-# supported way is an Authorized Integration: the workflow requests a
-# short-lived JWT (enable-openid-connect) and the registry accepts it as a
-# Basic-auth password. One-time setup by the integration's owner:
-#   1. User settings > Authorized Integrations > Add authorized integration
-#      > Forgejo Actions (Local): select this repository, workflow file
-#      `ci.yml`, git reference empty (ci, main, tags and PRs all build),
-#      access "All (public, private, and limited)" with every permission
-#      "No access" except package = "Read and write".
-#   2. Store the audience it shows (not secret) as the repository variable
-#      CADENCE_REGISTRY_AUDIENCE, e.g. `fj actions variables create
-#      CADENCE_REGISTRY_AUDIENCE u:1:...`.
-# Alternatively the CI_FORGEJO_REGISTRY_USERNAME / CI_FORGEJO_REGISTRY_TOKEN
-# secrets (an access token with package scope) take precedence when set.
+#   sed -i 's/toolbox:953dbb33881e/toolbox:<new>/' .forgejo/workflows/ci.yml
 #
-# Pushes to `develop` and `main` check and build everything without
-# publishing. The `ci` branch exists to exercise this file end to end (main
-# is mirrored publicly): every run on it, push or dispatch, goes all the way
-# through to a disposable prerelease tagged `ci-test`, replaced each time.
-# Real releases come from `v*` tags, whose version must match
-# daemon/pubspec.yaml and app/pubspec.yaml, which move together.
+# The image is private to the instance, so jobs pull it with the workflow
+# token (or the CI_FORGEJO_REGISTRY_* secrets when set). The workspace tool
+# is compiled from source at the start of each job into build/bin/cadence.
+#
+# Pushes to `main` check and build everything without publishing. The `ci`
+# branch exists to exercise this file end to end (main is mirrored
+# publicly): every run on it, push or dispatch, goes all the way through to
+# a disposable prerelease tagged `ci-test`, replaced each time. Real
+# releases come from `v*` tags, whose version must match daemon/pubspec.yaml
+# and app/pubspec.yaml, which move together.
 name: CI
 
 "on":
   push:
-    branches: [main, develop, ci]
+    branches: [main, ci]
     tags: ['v*']
   pull_request:
   workflow_dispatch:
 
-enable-openid-connect: true
-
 env:
   DEB_MAINTAINER: Chris Hendrickson <chris@artificery.dev>
-  TOOLCHAIN_IMAGE: cadence-toolchain
 
 jobs:
-  toolchain:
-    name: Resolve the toolchain image
-    runs-on: linux-amd64-container
-    timeout-minutes: 10
-    outputs:
-      image: ${{ steps.resolve.outputs.image }}
-      exists: ${{ steps.resolve.outputs.exists }}
-    steps:
-      - name: Checkout
-        uses: https://data.forgejo.org/actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Compute image tag and look it up in the registry
-        id: resolve
-        env:
-          REGISTRY_USERNAME: ${{ secrets.CI_FORGEJO_REGISTRY_USERNAME || github.actor }}
-          REGISTRY_TOKEN: ${{ secrets.CI_FORGEJO_REGISTRY_TOKEN || secrets.GITHUB_TOKEN }}
-        run: |
-          set -eu
-          : "${GITHUB_SERVER_URL:?set by the instance; pass --forgejo-instance to forgejo-runner exec}"
-          : "${GITHUB_REPOSITORY:?}"
-          registry=$(printf %s "$GITHUB_SERVER_URL" | sed 's#^https\?://##')
-          owner=$(printf %s "${GITHUB_REPOSITORY%%/*}" | tr 'A-Z' 'a-z')
-          # The same digest toolchain/run.sh uses locally.
-          digest=$(sh toolchain/digest.sh)
-          image="$registry/$owner/$TOOLCHAIN_IMAGE:$digest"
-          status=$(curl -sS -o /dev/null -w '%{http_code}' \
-            -u "$REGISTRY_USERNAME:$REGISTRY_TOKEN" \
-            -H 'Accept: application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json' \
-            "https://$registry/v2/$owner/$TOOLCHAIN_IMAGE/manifests/$digest" || true)
-          if [ "$status" = 200 ]; then exists=true; else exists=false; fi
-          echo "Toolchain image $image (registry answered $status, exists=$exists)"
-          echo "image=$image" >> "$GITHUB_OUTPUT"
-          echo "exists=$exists" >> "$GITHUB_OUTPUT"
-
-  toolchain-build:
-    name: Build and push the toolchain image
-    needs: toolchain
-    if: needs.toolchain.outputs.exists != 'true'
-    runs-on: linux-amd64-container
-    timeout-minutes: 60
-    container:
-      image: gcr.io/kaniko-project/executor:v1.23.2-debug
-    steps:
-      # kaniko's image has busybox (whose wget lacks TLS) but no git, curl or
-      # node. Credentials are therefore obtained by a curl docker action,
-      # which shares the job workspace, and kaniko clones the source itself
-      # through its git context. Pushes pin the exact commit; a pull request
-      # builds the tip of its source branch, since its merge commit is on no
-      # branch.
-      - name: Obtain registry credentials
-        uses: docker://docker.io/curlimages/curl:8.22.0
-        env:
-          IMAGE: ${{ needs.toolchain.outputs.image }}
-          AUDIENCE: ${{ vars.CADENCE_REGISTRY_AUDIENCE }}
-          REGISTRY_USERNAME: ${{ secrets.CI_FORGEJO_REGISTRY_USERNAME }}
-          REGISTRY_TOKEN: ${{ secrets.CI_FORGEJO_REGISTRY_TOKEN }}
-          ACTOR: ${{ github.actor }}
-        with:
-          entrypoint: /bin/sh
-          args: >-
-            -eu -c '
-            registry=${IMAGE%%/*}; path=${IMAGE#*/}; path=${path%%:*};
-            if [ -n "$REGISTRY_TOKEN" ]; then
-              user=$REGISTRY_USERNAME; pass=$REGISTRY_TOKEN; how="the CI_FORGEJO_REGISTRY_* secrets";
-            elif [ -n "$AUDIENCE" ]; then
-              : "${ACTIONS_ID_TOKEN_REQUEST_URL:?enable-openid-connect did not provide an ID token endpoint}";
-              pass=$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$AUDIENCE" | sed -n "s/.*\"value\":\"\([^\"]*\)\".*/\1/p");
-              [ -n "$pass" ] || { echo "::error::No JWT for audience $AUDIENCE; check the Authorized Integration restricts to this repository, ci.yml and this event"; exit 1; };
-              user=$ACTOR; how="an Authorized Integration JWT (audience $AUDIENCE)";
-            else
-              echo "::error::No registry credentials: set the CADENCE_REGISTRY_AUDIENCE variable to an Authorized Integration with package write capability, or the CI_FORGEJO_REGISTRY_USERNAME / CI_FORGEJO_REGISTRY_TOKEN secrets."; exit 1;
-            fi;
-            status=$(curl -sS -o /dev/null -w "%{http_code}" -u "$user:$pass" "https://$registry/v2/token?service=container_registry&scope=repository:$path:pull,push");
-            [ "$status" = 200 ] || { echo "::error::Registry $registry refused push credentials from $how (HTTP $status)"; exit 1; };
-            echo "Registry $registry accepted push credentials from $how";
-            printf "{\"auths\":{\"%s\":{\"auth\":\"%s\"}}}" "$registry" "$(printf "%s:%s" "$user" "$pass" | base64 | tr -d "\n")" > "$GITHUB_WORKSPACE/.registry-auth.json"
-            '
-      - name: Build toolchain/Containerfile with kaniko and push
-        env:
-          IMAGE: ${{ needs.toolchain.outputs.image }}
-          GIT_USERNAME: ${{ github.actor }}
-          GIT_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
-          SOURCE_REF: ${{ github.head_ref && format('refs/heads/{0}', github.head_ref) || github.ref }}
-          SOURCE_SHA: ${{ github.head_ref && '' || github.sha }}
-        run: |
-          set -eu
-          mkdir -p /kaniko/.docker
-          mv "$GITHUB_WORKSPACE/.registry-auth.json" /kaniko/.docker/config.json
-          context="git://${GITHUB_SERVER_URL#*://}/${GITHUB_REPOSITORY}.git#${SOURCE_REF}${SOURCE_SHA:+#$SOURCE_SHA}"
-          echo "Building $IMAGE from $context"
-          /kaniko/executor \
-            --context "$context" \
-            --dockerfile toolchain/Containerfile \
-            --destination "$IMAGE" \
-            --custom-platform linux/amd64 \
-            --snapshot-mode redo \
-            --compressed-caching=false
-
   check:
     name: Analyze and test the daemon workspace
-    needs: [toolchain, toolchain-build]
-    if: >-
-      always() && needs.toolchain.result == 'success'
-      && (needs.toolchain-build.result == 'success' || needs.toolchain-build.result == 'skipped')
     runs-on: linux-amd64-container
     timeout-minutes: 45
     container:
-      image: ${{ needs.toolchain.outputs.image }}
+      image: git.artificery.dev/artificery/toolbox:953dbb33881e
       credentials:
         username: ${{ secrets.CI_FORGEJO_REGISTRY_USERNAME || github.actor }}
         password: ${{ secrets.CI_FORGEJO_REGISTRY_TOKEN || secrets.GITHUB_TOKEN }}
@@ -167,25 +51,23 @@ jobs:
           persist-credentials: false
       - name: Resolve locked dependencies
         run: dart pub get --enforce-lockfile
+      - name: Compile the workspace tool
+        run: mkdir -p build/bin && dart compile exe tool/bin/cadence.dart -o build/bin/cadence
       # The daemon integration suites are off in CI for now: they spawn real
       # daemons and mounts, and on the shared runners they fail in ways the
       # same suites do not reproduce locally. Run `cadence check` locally.
       - name: Analyze and run the unit suites
-        run: cadence check --no-integration
+        run: build/bin/cadence check --no-integration
 
   build:
     name: Build and package cadenced for ${{ matrix.arch }}
     # After check, not beside it: the amd64 runners share one host, and three
     # release builds next to the integration suites starved its daemons.
-    needs: [toolchain, toolchain-build, check]
-    if: >-
-      always() && needs.toolchain.result == 'success'
-      && (needs.toolchain-build.result == 'success' || needs.toolchain-build.result == 'skipped')
-      && needs.check.result == 'success'
+    needs: check
     runs-on: linux-amd64-container
     timeout-minutes: 45
     container:
-      image: ${{ needs.toolchain.outputs.image }}
+      image: git.artificery.dev/artificery/toolbox:953dbb33881e
       credentials:
         username: ${{ secrets.CI_FORGEJO_REGISTRY_USERNAME || github.actor }}
         password: ${{ secrets.CI_FORGEJO_REGISTRY_TOKEN || secrets.GITHUB_TOKEN }}
@@ -219,15 +101,28 @@ jobs:
           echo "Packaging version $version"
       - name: Resolve locked dependencies
         run: dart pub get --enforce-lockfile
+      - name: Compile the workspace tool
+        run: mkdir -p build/bin && dart compile exe tool/bin/cadence.dart -o build/bin/cadence
       - name: Build bundle
-        run: cadence build --arch ${{ matrix.arch }}
+        run: build/bin/cadence build --arch ${{ matrix.arch }}
+      # Some Dart SDKs have packaged an x86-64 launcher for cross builds, so
+      # every shipped ELF file is checked against the target, not just listed.
       - name: Verify architecture
         run: |
+          set -eu
           cd build/cli/${{ matrix.arch }}/bundle
-          file bin/cadenced bin/cadencectl lib/libsqlite3.so lib/libcadence_probe.so
+          case "${{ matrix.arch }}" in
+            amd64) want='x86-64' ;;
+            arm64) want='aarch64' ;;
+            armhf) want='ARM, EABI5' ;;
+          esac
+          for f in bin/cadenced bin/cadencectl lib/libsqlite3.so lib/libcadence_probe.so; do
+            file "$f"
+            file -b "$f" | grep -q "$want" || { echo "::error::$f is not built for ${{ matrix.arch }}"; exit 1; }
+          done
       - name: Package bundle tarball
         run: |
-          cadence package bundle \
+          build/bin/cadence package bundle \
             --bundle build/cli/${{ matrix.arch }}/bundle \
             --arch ${{ matrix.arch }} \
             --source-commit "$GITHUB_SHA" \
@@ -235,7 +130,7 @@ jobs:
             --output "build/dist/cadenced-${CADENCE_VERSION}-linux-${{ matrix.arch }}.tar.gz"
       - name: Package Debian archive
         run: |
-          cadence package deb \
+          build/bin/cadence package deb \
             --bundle build/cli/${{ matrix.arch }}/bundle \
             --arch ${{ matrix.arch }} \
             --version "$CADENCE_VERSION" \
@@ -257,14 +152,10 @@ jobs:
     # Beside the daemon's check and the app build, not after them: the
     # two app jobs are independent, like analysis and packaging are for
     # the daemon.
-    needs: [toolchain, toolchain-build]
-    if: >-
-      always() && needs.toolchain.result == 'success'
-      && (needs.toolchain-build.result == 'success' || needs.toolchain-build.result == 'skipped')
     runs-on: linux-amd64-container
     timeout-minutes: 60
     container:
-      image: ${{ needs.toolchain.outputs.image }}
+      image: git.artificery.dev/artificery/toolbox:953dbb33881e
       credentials:
         username: ${{ secrets.CI_FORGEJO_REGISTRY_USERNAME || github.actor }}
         password: ${{ secrets.CI_FORGEJO_REGISTRY_TOKEN || secrets.GITHUB_TOKEN }}
@@ -275,19 +166,17 @@ jobs:
           persist-credentials: false
       - name: Resolve locked dependencies
         run: dart pub get --enforce-lockfile
+      - name: Compile the workspace tool
+        run: mkdir -p build/bin && dart compile exe tool/bin/cadence.dart -o build/bin/cadence
       - name: Analyze and test the app
-        run: cadence app check
+        run: build/bin/cadence app check
 
   build-app:
     name: Build and package the desktop app for amd64
-    needs: [toolchain, toolchain-build]
-    if: >-
-      always() && needs.toolchain.result == 'success'
-      && (needs.toolchain-build.result == 'success' || needs.toolchain-build.result == 'skipped')
     runs-on: linux-amd64-container
     timeout-minutes: 60
     container:
-      image: ${{ needs.toolchain.outputs.image }}
+      image: git.artificery.dev/artificery/toolbox:953dbb33881e
       credentials:
         username: ${{ secrets.CI_FORGEJO_REGISTRY_USERNAME || github.actor }}
         password: ${{ secrets.CI_FORGEJO_REGISTRY_TOKEN || secrets.GITHUB_TOKEN }}
@@ -298,6 +187,8 @@ jobs:
           persist-credentials: false
       - name: Resolve locked dependencies
         run: dart pub get --enforce-lockfile
+      - name: Compile the workspace tool
+        run: mkdir -p build/bin && dart compile exe tool/bin/cadence.dart -o build/bin/cadence
       - name: Determine package version
         run: |
           set -eu
@@ -320,14 +211,14 @@ jobs:
           echo "CADENCE_VERSION=$version" >> "$GITHUB_ENV"
           echo "Packaging version $version"
       - name: Build the app with cadenced bundled
-        run: cadence app build
+        run: build/bin/cadence app build
       - name: Archive the app bundle
         run: |
           mkdir -p build/dist
           tar -C app/build/linux/x64/release -czf "build/dist/cadence-${CADENCE_VERSION}-linux-amd64.tar.gz" --transform 's,^bundle,cadence,' bundle
       - name: Package Debian archive
         run: |
-          cadence package app-deb \
+          build/bin/cadence package app-deb \
             --bundle app/build/linux/x64/release/bundle \
             --version "$CADENCE_VERSION" \
             --maintainer "$DEB_MAINTAINER" \
@@ -348,7 +239,7 @@ jobs:
     needs: [check, build, check-app, build-app]
     if: >-
       (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
-      || github.ref == 'refs/heads/ci' 
+      || github.ref == 'refs/heads/ci'
     runs-on: linux-amd64-container
     timeout-minutes: 15
     env:

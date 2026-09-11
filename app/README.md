@@ -61,7 +61,7 @@ never collide.
 ## Developing
 
 `app/` sits outside the pub workspace — it needs the Flutter SDK, which the
-daemon's toolchain does not carry — and depends on `../packages/media`,
+pure-Dart workspace does not use — and depends on `../packages/media`,
 `../packages/client` and `../daemon` by path.
 
 ```sh

@@ -24,9 +24,8 @@ class LocalProcesses implements ProcessRunner {
 }
 
 /// The workspace root: `CADENCE_ROOT` when set, the checkout this source
-/// lives in when run from source, and otherwise the current directory — the
-/// toolchain image ships this tool AOT-compiled and runs it from the
-/// checkout.
+/// lives in when run from source, and otherwise the current directory — CI
+/// compiles this tool to build/bin/cadence and runs it from the checkout.
 String workspaceRoot(LocalFileSystem fs) {
   final override = io.Platform.environment['CADENCE_ROOT'];
   if (override != null && override.isNotEmpty)
