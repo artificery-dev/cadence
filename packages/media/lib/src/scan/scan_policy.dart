@@ -67,5 +67,6 @@ class ScanPolicy {
   int get hashCode => Object.hash(artwork, thumbnailSide);
 
   @override
-  String toString() => 'ScanPolicy(full, ${artwork.name}, $thumbnailSide px)';
+  String toString() =>
+      'ScanPolicy(sampled, ${artwork.name}, $thumbnailSide px)';
 }

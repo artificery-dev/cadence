@@ -18,6 +18,7 @@ import '../repositories/scanner_repository.dart';
 import '../tags.dart';
 import 'hasher.dart';
 
+import 'scan_budget.dart';
 import 'scan_jobs.dart';
 import 'scan_policy.dart';
 
@@ -73,7 +74,7 @@ class ScanProgress {
   /// Known files whose size or mtime had shifted, re-read in place.
   int updated = 0;
 
-  /// Vanished paths recognised by their sha256 at a new address.
+  /// Vanished paths recognised by their identity hash at a new address.
   int moved = 0;
 
   /// Files a previous scan knew that this one could not find.
@@ -111,8 +112,10 @@ class LibraryScanner {
     this.policy = ScanPolicy.full,
     this.rootAvailable = _available,
     this.onChange,
-    this.hashFile = sha256OfFile,
+    this.hashFile = sampledSha256OfFile,
+    ScanBudget? budget,
   }) : fileSystem = fileSystem ?? mediaFileSystem,
+       budget = budget ?? ScanBudget(),
        concurrency = concurrency ?? 2 {
     if (batchSize < 1 || this.concurrency < 1 || policy.thumbnailSide < 1) {
       throw ArgumentError("Scan budgets must be positive");
@@ -136,8 +139,12 @@ class LibraryScanner {
   final MediaDatabase db;
   final Future<String> Function(String path) hashFile;
 
-  /// Hashing and artwork budget for this scan.
+  /// Hashing and artwork policy for this scan.
   final ScanPolicy policy;
+
+  /// How fast the scan may read; shared with whatever else reads the
+  /// library, so the host sets one pace for all of it.
+  final ScanBudget budget;
   final ExtractorBuilder buildExtractor;
   final ThumbnailRenderer renderThumbnail;
   final SidecarAssociator associate;
@@ -283,11 +290,17 @@ class LibraryScanner {
             row,
       ];
     }
-    // Legacy sampled-only records must be indexed even when their stat is unchanged.
-    final fullHashes = await (db.select(
-      db.fileHashes,
-    )..where((h) => h.kind.equalsValue(HashKind.sha256))).get();
-    final fullyHashed = {for (final hash in fullHashes) hash.fileId};
+    // A file counts as read once an identity hash stands for it: the
+    // sampled hash a scan writes today, or the full sha256 of a scan
+    // before 0.11. Either keeps an unchanged file from being read again;
+    // a row without one is indexed afresh whatever its stat says.
+    final identityRows =
+        await (db.select(db.fileHashes)..where(
+              (h) =>
+                  h.kind.isInValues([HashKind.sampledSha256, HashKind.sha256]),
+            ))
+            .get();
+    final identified = {for (final hash in identityRows) hash.fileId};
     final knownByPath = {for (final row in known) row.path: row};
     final missingRows = {
       for (final row in known)
@@ -309,7 +322,7 @@ class LibraryScanner {
           ),
         );
       } else if (row.scannedAt != null &&
-          fullyHashed.contains(row.id) &&
+          identified.contains(row.id) &&
           row.sizeBytes == file.sizeBytes &&
           _sameSecond(row.modifiedAt, file.modifiedAt) &&
           (pending[file.path] == null ||
@@ -381,14 +394,16 @@ class LibraryScanner {
       'metadata': enrichment.length,
     });
 
-    // Only full file hashes can establish identity for move matching.
+    // A missing file is recognised elsewhere by its identity hash. Only
+    // the sampled kind can match: a legacy full sha256 is never computed
+    // again, so a file it named is a stranger once it moves.
     final missingBySha = <String, FileRow>{};
     if (missingRows.isNotEmpty) {
       final hashRows =
           await (db.select(db.fileHashes)..where(
                 (h) =>
                     h.fileId.isIn(missingRows.keys) &
-                    h.kind.equalsValue(HashKind.sha256),
+                    h.kind.equalsValue(HashKind.sampledSha256),
               ))
               .get();
       for (final hash in hashRows) {
@@ -412,6 +427,7 @@ class LibraryScanner {
           if (!available(job)) throw StateError('Root unavailable');
           final before = await mediaFileSystem.file(job.path).stat();
           final sha = await hashFile(job.path);
+          await budget.charge(ScanBudget.discoverCost(job.sizeBytes));
           final after = await mediaFileSystem.file(job.path).stat();
           if (before.size != job.sizeBytes ||
               before.modified != job.modifiedAt ||
@@ -433,7 +449,7 @@ class LibraryScanner {
             [
               _JobResult.ok(
                 job,
-                sha256: sha,
+                identity: sha,
                 metadataJson: (jsonDecode(metadata) as Map)
                     .cast<String, Object?>(),
                 artwork: const [],
@@ -471,6 +487,7 @@ class LibraryScanner {
           local,
           _WorkOrder([job], buildExtractor, renderThumbnail, policy),
         );
+        await budget.charge(ScanBudget.enrichCost(job.sizeBytes));
         if (cancelled()) return;
         final result = results.single;
         if (result.error != null) {
@@ -711,12 +728,12 @@ class LibraryScanner {
 
         FileRow? movedFrom;
         if (job.isNew) {
-          final candidate = missingBySha.remove(result.sha256);
+          final candidate = missingBySha.remove(result.identity);
           if (candidate != null &&
               mediaFileSystem.file(candidate.path).existsSync()) {
             // The bytes travelled but the original stayed — a copy, not a
             // move. Put the candidate back for a scan that misses it.
-            missingBySha[result.sha256!] = candidate;
+            missingBySha[result.identity!] = candidate;
           } else if (candidate != null) {
             movedFrom = candidate;
           }
@@ -755,7 +772,7 @@ class LibraryScanner {
         fileIdByPath[job.path] = fileId;
         await repo.replaceHashes(fileId, {
           ...result.hashes,
-          HashKind.sha256: result.sha256!,
+          HashKind.sampledSha256: result.identity!,
         });
         final item = await repo.ensureItem(
           libraryId,
@@ -1000,21 +1017,23 @@ class _WorkOrder {
 class _JobResult {
   const _JobResult.ok(
     this.job, {
-    this.sha256,
+    this.identity,
     required Map<String, Object?> this.metadataJson,
     required this.artwork,
     required this.hashes,
   }) : error = null;
 
   const _JobResult.failed(this.job, String this.error)
-    : sha256 = null,
+    : identity = null,
       metadataJson = null,
       artwork = const [],
       hashes = const {};
 
   final _ScanJob job;
   final String? error;
-  final String? sha256;
+
+  /// The sampled identity hash, from the discover stage.
+  final String? identity;
   final Map<String, Object?>? metadataJson;
   final List<ExtractedArtwork> artwork;
   final Map<HashKind, String> hashes;

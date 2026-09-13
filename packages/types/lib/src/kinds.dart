@@ -44,7 +44,19 @@ enum MediaKind { audio, video, image, document }
 /// The hash algorithms a file may be fingerprinted with. Hashes are stored
 /// as rows keyed by this kind, so growing the set is data, not schema.
 enum HashKind {
-  /// Content identity: the same bytes, the same hash.
+  /// The identity hash: sha256 over the file's first and last mebibyte
+  /// and its length. A fixed two-mebibyte read whatever the file's size,
+  /// so a library of any size is identified in minutes; a file that
+  /// differs only in its middle is the same file to the scanner, which
+  /// is the trade. This is what a scan writes and what recognises a
+  /// move.
+  sampledSha256,
+
+  /// sha256 over every byte: the identity of scans before 0.11, kept for
+  /// the rows they wrote. A row of this kind still says a file has been
+  /// read, so it is not read again; it cannot vouch for a move, since
+  /// nothing computes it any more. Rewritten as [sampledSha256] the next
+  /// time the file changes.
   sha256,
 
   /// Reserved storage kind for a future perceptual fingerprint implementation.

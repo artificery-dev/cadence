@@ -28,11 +28,28 @@ void registerTests() {
           album: 'Static Bloom',
           duration: Duration(minutes: 4, seconds: 12),
         ),
-        hashes: const {HashKind.sha256: 'deadbeef'},
+        hashes: const {HashKind.sampledSha256: 'deadbeef'},
         tags: [Tag.ofFormat('flac')],
       );
       return (libraryId, itemId);
     }
+
+    test('the read budget is set and read over the wire', () async {
+      expect(await client.scanBudget(), isNull);
+      expect(await client.setScanBudget(4 << 20), 4 << 20);
+      expect(await client.scanBudget(), 4 << 20);
+      expect(await client.setScanBudget(0), isNull, reason: 'zero lifts it');
+      await expectLater(
+        client.send(ServiceMethod.put, '/scan/budget', {'bytesPerSecond': -1}),
+        completion(predicate<ServiceResponse>((r) => r.status == 400)),
+      );
+      await expectLater(
+        client.send(ServiceMethod.put, '/scan/budget', {
+          'bytesPerSecond': 'fast',
+        }),
+        completion(predicate<ServiceResponse>((r) => r.status == 400)),
+      );
+    });
 
     test('libraries round-trip through the protocol', () async {
       final (libraryId, itemId) = await seedOne();

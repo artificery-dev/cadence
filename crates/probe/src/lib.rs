@@ -3,8 +3,9 @@
 //! Dart hands over a path; this crate hands back JSON — typed fields
 //! under the `MediaMetadata` names, every raw tag preserved in `extra`,
 //! artwork as base64, without computing content fingerprints. The same
-//! library also hashes whole files (`cadence_hash_file`): a streamed
-//! SHA-256 in native code, where Dart's pure implementation crawls.
+//! library computes the identity hash (`cadence_hash_file`): sha256 over a
+//! file's first and last mebibyte and its length, in native code, where
+//! Dart's pure implementation crawls.
 //! Malformed media can find panics in this stack, so every entry point
 //! is wrapped in `catch_unwind`: the worst a bad file can do is an `err`
 //! envelope. No globals live here; several Dart isolates call in at once.
@@ -19,7 +20,7 @@ mod report;
 use std::ffi::{c_char, CStr, CString};
 use std::fmt::Write as _;
 use std::fs::File;
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
 
@@ -29,12 +30,18 @@ use sha2::{Digest, Sha256};
 /// Bumped when the symbols or the envelope change shape.
 ///
 /// 1: `cadence_abi_version`, `cadence_probe_file`, `cadence_free_string`.
-/// 2: adds `cadence_hash_file`.
-const ABI_VERSION: u32 = 2;
+/// 2: adds `cadence_hash_file`, a full-file SHA-256 under `sha256`.
+/// 3: `cadence_hash_file` answers the sampled identity hash under
+///    `sampledSha256`; the full hash is gone.
+const ABI_VERSION: u32 = 3;
 
-/// How much of a file rides in each read while hashing: 1 MiB keeps a
-/// slow card streaming without holding a movie in memory.
-const HASH_CHUNK_SIZE: usize = 1024 * 1024;
+/// How far into each end of a file the identity hash reads: one mebibyte
+/// from the head, one from the tail. A file of twice this or less is
+/// read whole. Must match `sampledSpan` in the Dart hasher.
+const SAMPLED_SPAN: u64 = 1024 * 1024;
+
+/// How much of a file rides in each read while hashing.
+const HASH_CHUNK_SIZE: usize = 256 * 1024;
 
 pub struct ProbeError {
     code: &'static str,
@@ -85,29 +92,47 @@ pub fn probe_path(path_str: &str) -> Value {
     }
 }
 
-/// The file's SHA-256 as lowercase hex, streamed chunk by chunk — the
-/// same identity hash `sha256OfFile` computes in Dart, answered as the
-/// envelope `Value`: `{"ok": {"sha256": "…"}}`.
+/// The file's identity hash as lowercase hex — sha256 over its first
+/// `SAMPLED_SPAN` bytes, its last `SAMPLED_SPAN` bytes and its length as
+/// eight little-endian bytes, a file of `2 * SAMPLED_SPAN` or less
+/// contributing every byte once. Byte for byte the hash
+/// `sampledSha256OfFile` computes in Dart, answered as the envelope
+/// `Value`: `{"ok": {"sampledSha256": "…"}}`.
 pub fn hash_path(path_str: &str) -> Value {
-    match sha256_of_file(Path::new(path_str)) {
-        Ok(hex) => json!({ "ok": { "sha256": hex } }),
+    match sampled_sha256_of_file(Path::new(path_str)) {
+        Ok(hex) => json!({ "ok": { "sampledSha256": hex } }),
         Err(error) => json!({ "err": { "code": error.code, "msg": error.msg } }),
     }
 }
 
-fn sha256_of_file(path: &Path) -> Result<String> {
+fn sampled_sha256_of_file(path: &Path) -> Result<String> {
     let mut file = File::open(path)?;
+    let size = file.metadata()?.len();
     let mut hasher = Sha256::new();
     let mut buffer = vec![0u8; HASH_CHUNK_SIZE];
-    loop {
-        let read = match file.read(&mut buffer) {
-            Ok(0) => break,
-            Ok(n) => n,
-            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(err) => return Err(err.into()),
-        };
-        hasher.update(&buffer[..read]);
+    let mut feed = |file: &mut File, from: u64, count: u64| -> Result<()> {
+        file.seek(SeekFrom::Start(from))?;
+        let mut left = count;
+        while left > 0 {
+            let want = left.min(HASH_CHUNK_SIZE as u64) as usize;
+            let read = match file.read(&mut buffer[..want]) {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(err) => return Err(err.into()),
+            };
+            hasher.update(&buffer[..read]);
+            left -= read as u64;
+        }
+        Ok(())
+    };
+    if size <= 2 * SAMPLED_SPAN {
+        feed(&mut file, 0, size)?;
+    } else {
+        feed(&mut file, 0, SAMPLED_SPAN)?;
+        feed(&mut file, size - SAMPLED_SPAN, SAMPLED_SPAN)?;
     }
+    hasher.update(size.to_le_bytes());
     let digest = hasher.finalize();
     let mut hex = String::with_capacity(digest.len() * 2);
     for byte in digest.iter() {
@@ -292,7 +317,7 @@ mod tests {
         unsafe { cadence_free_string(raw) };
         let envelope: Value = serde_json::from_str(&text).unwrap();
         assert!(envelope.get("ok").is_some());
-        assert_eq!(cadence_abi_version(), 2);
+        assert_eq!(cadence_abi_version(), 3);
     }
 
     /// A scratch file with `contents`, removed when dropped.
@@ -317,35 +342,72 @@ mod tests {
         }
     }
 
+    /// The identity hash computed the plain way: one update over the
+    /// bytes the sampled hash is defined over, then the length.
+    fn sampled_reference(bytes: &[u8]) -> String {
+        let span = SAMPLED_SPAN as usize;
+        let mut whole = Sha256::new();
+        if bytes.len() <= 2 * span {
+            whole.update(bytes);
+        } else {
+            whole.update(&bytes[..span]);
+            whole.update(&bytes[bytes.len() - span..]);
+        }
+        whole.update((bytes.len() as u64).to_le_bytes());
+        whole
+            .finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    }
+
     #[test]
-    fn hash_matches_the_published_vectors() {
+    fn hash_of_a_small_file_covers_its_bytes_and_length() {
         let empty = Scratch::with("empty", b"");
         assert_eq!(
-            hash_path(empty.path())["ok"]["sha256"],
-            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            hash_path(empty.path())["ok"]["sampledSha256"],
+            sampled_reference(b"")
         );
         let abc = Scratch::with("abc", b"abc");
         assert_eq!(
-            hash_path(abc.path())["ok"]["sha256"],
-            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+            hash_path(abc.path())["ok"]["sampledSha256"],
+            sampled_reference(b"abc")
+        );
+        // The length is part of the hash: "abc" is not "abc" padded.
+        let abcd = Scratch::with("abcd", b"abc\0");
+        assert_ne!(
+            hash_path(abcd.path())["ok"]["sampledSha256"],
+            hash_path(abc.path())["ok"]["sampledSha256"]
         );
     }
 
     #[test]
-    fn hash_streams_across_chunk_boundaries() {
-        // Three chunks and a tail: the digest must not depend on how the
-        // reads fall. "a" × (3 MiB + 17) has a known digest computed by
-        // sha2 itself over a single update, checked against the stream.
-        let size = 3 * HASH_CHUNK_SIZE + 17;
-        let big = Scratch::with("big", &vec![b'a'; size]);
-        let mut whole = Sha256::new();
-        whole.update(vec![b'a'; size]);
-        let expected: String = whole
-            .finalize()
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect();
-        assert_eq!(hash_path(big.path())["ok"]["sha256"], expected);
+    fn hash_of_a_large_file_reads_both_ends_and_nothing_between() {
+        // Three spans and a tail, patterned so a dropped or doubled chunk
+        // would show, checked against a single-update reference.
+        let size = 3 * SAMPLED_SPAN as usize + 17;
+        let bytes: Vec<u8> = (0..size).map(|i| (i * 31 + 7) as u8).collect();
+        let big = Scratch::with("big", &bytes);
+        assert_eq!(
+            hash_path(big.path())["ok"]["sampledSha256"],
+            sampled_reference(&bytes)
+        );
+
+        // A change in the middle is invisible; a change at either end is not.
+        let mut middle = bytes.clone();
+        middle[size / 2] ^= 0xff;
+        let middled = Scratch::with("middle", &middle);
+        assert_eq!(
+            hash_path(middled.path())["ok"]["sampledSha256"],
+            hash_path(big.path())["ok"]["sampledSha256"]
+        );
+        let mut tail = bytes.clone();
+        tail[size - 1] ^= 0xff;
+        let tailed = Scratch::with("tail", &tail);
+        assert_ne!(
+            hash_path(tailed.path())["ok"]["sampledSha256"],
+            hash_path(big.path())["ok"]["sampledSha256"]
+        );
     }
 
     #[test]
@@ -364,10 +426,7 @@ mod tests {
         let text = unsafe { CStr::from_ptr(raw) }.to_str().unwrap().to_owned();
         unsafe { cadence_free_string(raw) };
         let envelope: Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(
-            envelope["ok"]["sha256"],
-            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
-        );
+        assert_eq!(envelope["ok"]["sampledSha256"], sampled_reference(b"abc"));
         let null = unsafe { cadence_hash_file(std::ptr::null()) };
         let text = unsafe { CStr::from_ptr(null) }.to_str().unwrap().to_owned();
         unsafe { cadence_free_string(null) };

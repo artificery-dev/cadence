@@ -83,6 +83,11 @@ class CadenceClient {
   Future<Map<String, Object?>> scan(int library) =>
       call('post', '/libraries/$library/scan');
   Future<Map<String, Object?>> job(String id) => call('get', '/jobs/$id');
+
+  /// Paces every read the library does at [bytesPerSecond]; null or zero
+  /// lifts the pace. Answers `{"bytesPerSecond": n}` as the service settled.
+  Future<Map<String, Object?>> setScanBudget(int? bytesPerSecond) =>
+      call('put', '/scan/budget', {'bytesPerSecond': bytesPerSecond});
   Future<void> cancel(String id) => call('delete', '/jobs/$id');
   Future<List<Object?>> items(int library) async =>
       (await call('get', '/libraries/$library/items'))['items'] as List;

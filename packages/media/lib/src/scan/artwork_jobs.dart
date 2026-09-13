@@ -11,6 +11,7 @@ import '../extract/image_extractor.dart' as images;
 import '../kinds.dart';
 import '../repositories/scanner_repository.dart';
 
+import 'scan_budget.dart';
 import 'scanner.dart';
 
 /// The pictures, made later.
@@ -38,7 +39,9 @@ class ArtworkQueue {
     this.thumbnailSide = 256,
     this.onArtworkChanged,
     this.fileAvailable,
+    ScanBudget? budget,
   }) : fileSystem = fileSystem ?? mediaFileSystem,
+       budget = budget ?? ScanBudget(),
        _repo = ScannerRepository(db);
 
   final FileSystem fileSystem;
@@ -51,6 +54,10 @@ class ArtworkQueue {
   final int thumbnailSide;
   final bool Function(String path)? fileAvailable;
   final void Function(int fileId)? onArtworkChanged;
+
+  /// How fast the queue may read, shared with the scanner. A cover is
+  /// charged as [ScanBudget.enrichCost] of its file.
+  final ScanBudget budget;
 
   final _queue = ListQueue<int>();
   final _queued = <int>{};
@@ -204,6 +211,15 @@ class ArtworkQueue {
           row = await _one(id);
         } on Object {
           row = null;
+        }
+        if (budget.limited) {
+          final size =
+              await (db.selectOnly(db.files)
+                    ..addColumns([db.files.sizeBytes])
+                    ..where(db.files.id.equals(id)))
+                  .map((row) => row.read(db.files.sizeBytes))
+                  .getSingleOrNull();
+          if (size != null) await budget.charge(ScanBudget.enrichCost(size));
         }
         final waiters = _waiters.remove(id);
         if (waiters != null) {

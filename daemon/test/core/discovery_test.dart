@@ -56,7 +56,7 @@ void main() {
       expect((await client.job(job['jobId'] as String))['phase'], 'metadata');
       expect(
         (await host.db.select(host.db.fileHashes).get()).single.kind,
-        HashKind.sha256,
+        HashKind.sampledSha256,
       );
       expect(
         events.where((e) => e['type'] == 'media-item-added'),
@@ -178,7 +178,7 @@ void main() {
                 );
                 hashCalls.add(path);
                 if (path.endsWith('slow.mp3')) await slow.future;
-                return sha256OfFile(path);
+                return sampledSha256OfFile(path);
               },
               onChange: (event) {
                 if (event['type'] == 'scan-phase-changed')

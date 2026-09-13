@@ -11,7 +11,7 @@ import 'package:cadence_media/src/extract/extractor.dart';
 import 'package:cadenced/probe.dart';
 import 'package:cadence_media/src/kinds.dart';
 import 'package:cadence_media/src/metadata.dart';
-import 'package:cadence_media/src/scan/hasher.dart' show sha256OfFile;
+import 'package:cadence_media/src/scan/hasher.dart' show sampledSha256OfFile;
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart'
     hide test, setUp, tearDown, setUpAll, tearDownAll, addTearDown;
@@ -355,7 +355,7 @@ void registerTests() {
     });
   });
 
-  group('sha256', () {
+  group('sampledSha256', () {
     probeTest('agrees with the Dart hasher on every fixture', (probe) async {
       for (final path in [
         Fixtures.taggedFlac,
@@ -364,14 +364,14 @@ void registerTests() {
         Fixtures.exifJpg,
       ]) {
         expect(
-          await probe.sha256(path),
-          await sha256OfFile(path),
+          await probe.sampledSha256(path),
+          await sampledSha256OfFile(path),
           reason: path,
         );
       }
     });
 
-    probeTest('streams a file longer than one native chunk', (probe) async {
+    probeTest('reads both ends of a file longer than two spans', (probe) async {
       final dir = Directory.systemTemp.createTempSync('probe_hash');
       addTearDown(() => dir.deleteSync(recursive: true));
       final path = p.join(dir.path, 'big.bin');
@@ -382,7 +382,7 @@ void registerTests() {
         sink.add(List<int>.generate(1024, (j) => (i + j) & 0xff));
       }
       await sink.close();
-      expect(await probe.sha256(path), await sha256OfFile(path));
+      expect(await probe.sampledSha256(path), await sampledSha256OfFile(path));
     });
 
     probeTest('keeps unicode filenames intact', (probe) async {
@@ -390,12 +390,15 @@ void registerTests() {
       addTearDown(() => dir.deleteSync(recursive: true));
       final path = p.join(dir.path, 'naïve — ☃.flac');
       File(Fixtures.taggedFlac).copySync(path);
-      expect(await probe.sha256(path), await sha256OfFile(Fixtures.taggedFlac));
+      expect(
+        await probe.sampledSha256(path),
+        await sampledSha256OfFile(Fixtures.taggedFlac),
+      );
     });
 
     probeTest('a missing file throws the filesystem exception', (probe) async {
       await expectLater(
-        probe.sha256('/definitely/not/here.bin'),
+        probe.sampledSha256('/definitely/not/here.bin'),
         throwsA(isA<FileSystemException>()),
       );
     });
@@ -406,7 +409,7 @@ void registerTests() {
       await expectLater(
         withMediaFileSystem(
           MemoryFileSystem.test(),
-          () => probe.sha256('/virtual.mp3'),
+          () => probe.sampledSha256('/virtual.mp3'),
         ),
         throwsUnsupportedError,
       );
@@ -415,9 +418,9 @@ void registerTests() {
     probeTest('hashes several files at once without tripping over', (
       probe,
     ) async {
-      final expected = await sha256OfFile(Fixtures.taggedFlac);
+      final expected = await sampledSha256OfFile(Fixtures.taggedFlac);
       final answers = await Future.wait([
-        for (var i = 0; i < 6; i++) probe.sha256(Fixtures.taggedFlac),
+        for (var i = 0; i < 6; i++) probe.sampledSha256(Fixtures.taggedFlac),
       ]);
       expect(answers, everyElement(expected));
     });

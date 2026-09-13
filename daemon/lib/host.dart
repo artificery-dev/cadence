@@ -63,8 +63,9 @@ class MediaHost implements MediaEndpoint {
     bool requireRootAvailability = false,
     ScanPolicy policy = const ScanPolicy(artwork: ArtworkPolicy.deferred),
     ExtractorBuilder buildExtractor = defaultMediaExtractor,
-    Future<String> Function(String path) hashFile = sha256OfFile,
+    Future<String> Function(String path) hashFile = sampledSha256OfFile,
     LibraryWatchService Function(ScanCoordinator)? watch,
+    ScanBudget? budget,
   }) async {
     if (_owners[database] == true)
       throw StateError('Database already owned by a host');
@@ -75,10 +76,12 @@ class MediaHost implements MediaEndpoint {
       void changed(Map<String, Object?> event) =>
           activeHost?._emit(event['type'] as String, event);
 
+      final pace = budget ?? ScanBudget();
       final artwork = ArtworkQueue(
         database,
         buildExtractor: buildExtractor,
         thumbnailSide: policy.thumbnailSide,
+        budget: pace,
         fileAvailable: (path) =>
             activeHost?.fileAvailable(path) ?? !requireRootAvailability,
         onArtworkChanged: (fileId) =>
@@ -91,6 +94,7 @@ class MediaHost implements MediaEndpoint {
           buildExtractor: buildExtractor,
           hashFile: hashFile,
           policy: policy,
+          budget: pace,
           onChange: changed,
           rootAvailable: (path) =>
               (availability[path] ?? !requireRootAvailability) &&
@@ -102,6 +106,7 @@ class MediaHost implements MediaEndpoint {
         database,
         coordinator: coordinator,
         artwork: artwork,
+        budget: pace,
         watch: watch?.call(coordinator),
       );
       final host = MediaHost._(

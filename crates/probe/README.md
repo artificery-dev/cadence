@@ -7,9 +7,10 @@ for video containers, nom-exif for EXIF (HEIC included), lopdf and
 for PDF metadata, rbook for EPUBs — and answers over four C symbols
 (`cadence_abi_version`, `cadence_probe_file`, `cadence_hash_file`,
 `cadence_free_string`) as a JSON envelope whose field names match the
-Dart `MediaMetadata` model. `cadence_hash_file` streams a file's SHA-256
-through the `sha2` crate, the identity hash the scanner would otherwise
-compute in pure Dart at a fraction of the speed.
+Dart `MediaMetadata` model. `cadence_hash_file` computes the scanner's
+identity hash through the `sha2` crate: sha256 over the file's first and
+last mebibyte and its length, byte for byte what `sampledSha256OfFile`
+computes in pure Dart at a fraction of the speed. The ABI is 3.
 The library is strictly optional: when it is absent the Dart stack runs
 without it, and `daemon/lib/probe.dart` documents
 where the loader looks.

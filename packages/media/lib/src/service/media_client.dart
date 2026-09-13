@@ -271,6 +271,22 @@ class MediaClient {
           })).body['id']
           as int;
 
+  /// How fast the library may read, in bytes a second; null for no limit.
+  Future<int?> scanBudget() async =>
+      (await _expectOk(
+            ServiceMethod.get,
+            '/scan/budget',
+          )).body['bytesPerSecond']
+          as int?;
+
+  /// Paces every read the library does at [bytesPerSecond]; null or zero
+  /// lifts the pace. Answers what the service settled on.
+  Future<int?> setScanBudget(int? bytesPerSecond) async =>
+      (await _expectOk(ServiceMethod.put, '/scan/budget', {
+            'bytesPerSecond': bytesPerSecond,
+          })).body['bytesPerSecond']
+          as int?;
+
   /// Asks for a scan without insisting: 202 and the opening state when the
   /// scanner takes the job, 409 when one is already running, 404 when the
   /// library is not — either way the answer comes back for the caller to

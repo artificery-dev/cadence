@@ -23,6 +23,7 @@ export 'src/repositories/settings_store.dart';
 export 'src/scan/artwork_jobs.dart';
 export 'src/scan/hasher.dart';
 export 'src/scan/scan_jobs.dart';
+export 'src/scan/scan_budget.dart';
 export 'src/scan/scan_policy.dart';
 export 'src/scan/scanner.dart';
 export 'src/service/media_client.dart';

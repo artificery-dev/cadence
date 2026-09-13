@@ -72,7 +72,7 @@ class ManagedLibraryHost implements MediaEndpoint {
     this.nativeAvailable = false,
     this.reconcileOnAttach = true,
     this.buildExtractor = defaultMediaExtractor,
-    this.hashFile = sha256OfFile,
+    this.hashFile = sampledSha256OfFile,
     this.hostRootAvailability = false,
     this.watch,
   });
@@ -91,9 +91,13 @@ class ManagedLibraryHost implements MediaEndpoint {
   final ScanPolicy policy;
   final ExtractorBuilder buildExtractor;
 
-  /// The scanner's identity hash — [sha256OfFile], or the native probe's
-  /// when one is loaded.
+  /// The scanner's identity hash — [sampledSha256OfFile], or the native
+  /// probe's when one is loaded.
   final Future<String> Function(String path) hashFile;
+
+  /// How fast scans may read. Held here rather than by the host so the
+  /// pace a client set survives the host being reopened on a new volume.
+  final ScanBudget budget = ScanBudget();
   VolumeAttachment? _attachment;
   VolumeVfs? _vfs;
   MediaHost? _host;
@@ -307,6 +311,7 @@ class ManagedLibraryHost implements MediaEndpoint {
           policy: policy,
           buildExtractor: buildExtractor,
           hashFile: hashFile,
+          budget: budget,
           nativeAvailable: nativeAvailable,
           autoStartJobs: false,
         );

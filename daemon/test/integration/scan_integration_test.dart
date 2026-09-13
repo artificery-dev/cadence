@@ -89,7 +89,7 @@ void registerTests() {
         final item = (await client.mediaItems(lib)).single;
         expect((item.metadata as AudioMetadata).title, 'Sine of the Times');
         final file = (await db.select(db.files).get()).single;
-        final shaBefore = await _sha256Row(db, file.id);
+        final shaBefore = await _identityRow(db, file.id);
         expect(shaBefore, matches(RegExp(r'^[0-9a-f]{64}$')));
 
         final second = await _scan(client, lib, after: first.finishedAt);
@@ -116,7 +116,7 @@ void registerTests() {
         expect(updated.id, item.id, reason: 'the item survives the rewrite');
         expect(updated.fileId, item.fileId);
         expect((updated.metadata as AudioMetadata).title, 'Four Forty');
-        expect(await _sha256Row(db, file.id), isNot(shaBefore));
+        expect(await _identityRow(db, file.id), isNot(shaBefore));
 
         // The search index moved with the metadata, not after it.
         expect(await client.search('four forty'), contains(item.id));
@@ -145,7 +145,7 @@ void registerTests() {
       expect(second.missing, 0);
 
       final row = (await db.select(db.files).get()).single;
-      expect(row.id, item.fileId, reason: 'recognised by sha256, not reborn');
+      expect(row.id, item.fileId, reason: 'recognised by its hash, not reborn');
       expect(row.path, moved);
       expect(row.missingSince, isNull);
       final after = (await client.mediaItems(lib)).single;
@@ -304,7 +304,7 @@ void registerTests() {
       expect(
         row.id,
         item.fileId,
-        reason: 'a whole scan of absence later, the sha256 still vouches',
+        reason: 'a whole scan of absence later, the hash still vouches',
       );
       expect(row.path, elsewhere);
       expect(row.missingSince, isNull);
@@ -402,11 +402,13 @@ ProbeExtractor? _loadProbe() {
   return ProbeExtractor.tryLoad();
 }
 
-/// The file's sha256 row, straight from the table.
-Future<String> _sha256Row(MediaDatabase db, int fileId) async {
+/// The file's identity hash row, straight from the table.
+Future<String> _identityRow(MediaDatabase db, int fileId) async {
   final rows = await db.select(db.fileHashes).get();
   return rows
-      .singleWhere((row) => row.fileId == fileId && row.kind == HashKind.sha256)
+      .singleWhere(
+        (row) => row.fileId == fileId && row.kind == HashKind.sampledSha256,
+      )
       .value;
 }
 
@@ -919,17 +921,21 @@ void _treeSuite(
       );
     });
 
-    test('full SHA-256 identities without content fingerprints', () {
+    test('sampled identities without content fingerprints', () {
       for (final row in fileRows) {
         final sha = [
           for (final hash in hashRows)
-            if (hash.fileId == row.id && hash.kind == HashKind.sha256) hash,
+            if (hash.fileId == row.id && hash.kind == HashKind.sampledSha256)
+              hash,
         ];
         expect(sha, hasLength(1), reason: row.path);
         expect(sha.single.value, matches(RegExp(r'^[0-9a-f]{64}$')));
       }
 
-      expect(hashRows.every((hash) => hash.kind == HashKind.sha256), isTrue);
+      expect(
+        hashRows.every((hash) => hash.kind == HashKind.sampledSha256),
+        isTrue,
+      );
     });
 
     test('a second pass over unchanged ground changes nothing', () async {

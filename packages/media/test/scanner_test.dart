@@ -3,7 +3,6 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:cadence_media/cadence_media.dart';
-import 'package:crypto/crypto.dart' as crypto;
 import 'package:drift/native.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart'
@@ -166,6 +165,7 @@ void registerTests() {
     int concurrency = 2,
     bool extractInIsolates = false,
     ScanPolicy policy = ScanPolicy.full,
+    ScanBudget? budget,
   }) => LibraryScanner(
     db,
     buildExtractor: build ?? _buildCanned,
@@ -175,6 +175,7 @@ void registerTests() {
     concurrency: concurrency,
     batchSize: batchSize,
     policy: policy,
+    budget: budget,
   );
 
   Future<List<FileRow>> files() => db.select(db.files).get();
@@ -224,14 +225,9 @@ void registerTests() {
       );
 
       final hashA = (await hashes()).singleWhere(
-        (h) => h.fileId == rowA.id && h.kind == HashKind.sha256,
+        (h) => h.fileId == rowA.id && h.kind == HashKind.sampledSha256,
       );
-      expect(
-        hashA.value,
-        crypto.sha256
-            .convert(mediaFileSystem.file(a).readAsBytesSync())
-            .toString(),
-      );
+      expect(hashA.value, await sampledSha256OfFile(a));
     });
 
     test('an unchanged file is left exactly alone', () async {
@@ -264,14 +260,9 @@ void registerTests() {
       expect(after.sizeBytes, isNot(before.sizeBytes));
       expect((await items()).single.id, itemBefore.id);
       final hash = (await hashes()).singleWhere(
-        (h) => h.fileId == after.id && h.kind == HashKind.sha256,
+        (h) => h.fileId == after.id && h.kind == HashKind.sampledSha256,
       );
-      expect(
-        hash.value,
-        crypto.sha256
-            .convert(mediaFileSystem.file(a).readAsBytesSync())
-            .toString(),
-      );
+      expect(hash.value, await sampledSha256OfFile(a));
     });
 
     test(
@@ -751,41 +742,89 @@ void registerTests() {
   });
 
   group('ScanPolicy', () {
-    test('lean policy stores full hashes for large and small files', () async {
+    test('every file gets one sampled identity hash, large or small', () async {
       final big = write('big.mp3', 'x' * (3 * sampledSpan));
       write('small.mp3', 'small');
       await scanner(policy: ScanPolicy.lean).scan(libraryId);
       final rows = await hashes();
       expect(rows, hasLength(2));
-      expect(rows.every((h) => h.kind == HashKind.sha256), isTrue);
+      expect(rows.every((h) => h.kind == HashKind.sampledSha256), isTrue);
       for (final file in await files()) {
         expect(
           rows.singleWhere((h) => h.fileId == file.id).value,
-          crypto.sha256
-              .convert(mediaFileSystem.file(file.path).readAsBytesSync())
-              .toString(),
+          await sampledSha256OfFile(file.path),
         );
       }
-      final before = await sha256OfFile(big);
+      // The identity reads the ends and the length: a byte between the
+      // spans changes nothing, which is the trade for a fixed-cost read.
+      final before = await sampledSha256OfFile(big);
       final bytes = mediaFileSystem.file(big).readAsBytesSync();
       bytes[sampledSpan + 10] = 0x79;
       mediaFileSystem.file(big).writeAsBytesSync(bytes);
-      expect(await sha256OfFile(big), isNot(before));
+      expect(await sampledSha256OfFile(big), before);
+      bytes[bytes.length - 1] = 0x79;
+      mediaFileSystem.file(big).writeAsBytesSync(bytes);
+      expect(await sampledSha256OfFile(big), isNot(before));
     });
 
-    test('unchanged files without full hashes are indexed again', () async {
+    test(
+      'unchanged files without an identity hash are indexed again',
+      () async {
+        write('old.mp3', 'legacy');
+        await scanner().scan(libraryId);
+        final original = (await files()).single;
+        await db.delete(db.fileHashes).go();
+        final progress = await scanner(policy: ScanPolicy.lean).scan(libraryId);
+        expect(progress.updated, 1);
+        expect((await files()).single.id, original.id);
+        expect((await hashes()).single.kind, HashKind.sampledSha256);
+        expect(
+          (await scanner(policy: ScanPolicy.lean).scan(libraryId)).changed,
+          0,
+        );
+      },
+    );
+
+    test('a read budget is charged for every file read', () async {
+      write('one.mp3', 'a' * (3 * sampledSpan));
+      write('two.mp3', 'small');
+      final charges = <int>[];
+      final budget = _RecordingBudget(charges);
+      await scanner(budget: budget).scan(libraryId);
+      // Each file: its identity read, then its tag pass.
+      expect(
+        charges..sort(),
+        [
+          ScanBudget.enrichCost(5),
+          ScanBudget.discoverCost(5),
+          ScanBudget.enrichCost(3 * sampledSpan),
+          ScanBudget.discoverCost(3 * sampledSpan),
+        ]..sort(),
+      );
+      charges.clear();
+      await scanner(budget: budget).scan(libraryId);
+      expect(charges, isEmpty, reason: 'nothing read, nothing charged');
+    });
+
+    test('a legacy full sha256 row still counts as read', () async {
       write('old.mp3', 'legacy');
       await scanner().scan(libraryId);
       final original = (await files()).single;
+      // A scan before 0.11 wrote the whole file's sha256. Stand one in.
       await db.delete(db.fileHashes).go();
-      final progress = await scanner(policy: ScanPolicy.lean).scan(libraryId);
-      expect(progress.updated, 1);
-      expect((await files()).single.id, original.id);
+      await db
+          .into(db.fileHashes)
+          .insert(
+            FileHashesCompanion.insert(
+              fileId: original.id,
+              kind: HashKind.sha256,
+              value: 'f' * 64,
+            ),
+          );
+      final progress = await scanner().scan(libraryId);
+      expect(progress.changed, 0, reason: 'nothing to read again');
+      expect(progress.updated, 0);
       expect((await hashes()).single.kind, HashKind.sha256);
-      expect(
-        (await scanner(policy: ScanPolicy.lean).scan(libraryId)).changed,
-        0,
-      );
     });
 
     test('a move is recognised with lean artwork policy', () async {
@@ -859,8 +898,17 @@ void registerTests() {
       await scanner(policy: ScanPolicy.lean).scan(libraryId);
 
       final rows = await hashes();
-      expect(rows.single.kind, HashKind.sha256);
+      expect(rows.single.kind, HashKind.sampledSha256);
       expect((await artworks()).map((r) => r.role), [ArtworkRole.thumbnail]);
     });
   });
+}
+
+/// A budget that keeps every charge and never waits.
+class _RecordingBudget extends ScanBudget {
+  _RecordingBudget(this.charges) : super(bytesPerSecond: 1);
+  final List<int> charges;
+
+  @override
+  Future<void> charge(int bytes) async => charges.add(bytes);
 }

@@ -11,6 +11,7 @@ import '../repositories/scanner_repository.dart';
 import '../repositories/search_repository.dart';
 import '../repositories/settings_store.dart';
 import '../scan/artwork_jobs.dart';
+import '../scan/scan_budget.dart';
 import '../scan/scan_jobs.dart';
 import '../watch_adapter.dart';
 import '../tags.dart';
@@ -31,7 +32,9 @@ class MediaService {
     ScanCoordinator? coordinator,
     LibraryWatchService? watch,
     this._artwork,
-  }) : _libraries = LibraryRepository(db),
+    ScanBudget? budget,
+  }) : budget = budget ?? ScanBudget(),
+       _libraries = LibraryRepository(db),
        _collections = CollectionsRepository(db),
        _settings = SettingsStore(db),
        _search = SearchRepository(db),
@@ -54,6 +57,10 @@ class MediaService {
   /// The pictures made after the scan, when the policy defers them; null
   /// when the scan makes its own.
   final ArtworkQueue? _artwork;
+
+  /// How fast the scanner and the artwork queue may read: the object they
+  /// charge against, set over the wire at `/scan/budget`.
+  final ScanBudget budget;
 
   Map<String, Object?> get artworkStatus =>
       _artwork?.toJson() ?? const {'pending': 0, 'running': false};
@@ -206,6 +213,12 @@ class MediaService {
         200,
         {'cancelled': _coordinator.cancel(int.parse(id))},
       ),
+      (ServiceMethod.get, ['scan', 'budget']) => _reply(
+        r,
+        200,
+        budget.toJson(),
+      ),
+      (ServiceMethod.put, ['scan', 'budget']) => _setBudget(r),
       (ServiceMethod.post, ['scan']) => _reply(r, 202, {
         'queued': await _coordinator.scanAll(),
       }),
@@ -336,6 +349,19 @@ class MediaService {
 
   /// Books the scan and answers 202 with its opening snapshot — or 409
   /// when one is already on the floor, 404 when the library is not.
+  /// `{"bytesPerSecond": n}` paces every read the library does; null or
+  /// zero lifts the pace. Anything else is a 400.
+  ServiceResponse _setBudget(ServiceRequest r) {
+    final value = r.body?['bytesPerSecond'];
+    if (value != null && (value is! int || value < 0)) {
+      return _reply(r, 400, {
+        'error': 'bytesPerSecond must be a non-negative integer or null.',
+      });
+    }
+    budget.bytesPerSecond = value as int?;
+    return _reply(r, 200, budget.toJson());
+  }
+
   Future<ServiceResponse> _startScan(ServiceRequest r, int libraryId) async {
     try {
       return _reply(r, 202, (await _coordinator.start(libraryId)).toJson());

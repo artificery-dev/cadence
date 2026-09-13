@@ -8,7 +8,7 @@ import 'package:path/path.dart' as p;
 
 import 'package:cadence_media/src/database/database.dart';
 import 'package:cadence_media/src/kinds.dart';
-import 'package:cadence_media/src/scan/hasher.dart' show sha256OfFile;
+import 'package:cadence_media/src/scan/hasher.dart' show sampledSha256OfFile;
 import 'package:cadence_media/src/metadata.dart';
 import 'package:cadence_media/src/extract/extractor.dart';
 import 'package:cadence_media/src/filesystem.dart'
@@ -23,15 +23,16 @@ typedef _FreeStringC = Void Function(Pointer<Utf8>);
 typedef _FreeStringDart = void Function(Pointer<Utf8>);
 
 /// The ABI generation this loader speaks; the library must answer the same.
-const int _abiVersion = 2;
+const int _abiVersion = 3;
 
 /// The native probe tier — Rust behind four C symbols, when its library
 /// is around.
 ///
-/// `cadence_abi_version` must answer 2, `cadence_probe_file` takes a path
+/// `cadence_abi_version` must answer 3, `cadence_probe_file` takes a path
 /// and returns a JSON envelope (`{"ok": …}` or `{"err": …}`),
-/// `cadence_hash_file` takes a path and answers the file's SHA-256 the
-/// same way, and `cadence_free_string` releases either answer. The probe's
+/// `cadence_hash_file` takes a path and answers the file's sampled
+/// identity hash the same way, and `cadence_free_string` releases either
+/// answer. The probe's
 /// `ok` payload's `fields` already speak [MediaMetadata]'s JSON names, so
 /// mapping is mostly a matter of listening: fields in, raw tags into
 /// `extra`, artwork base64-decoded. Legacy fingerprint fields are ignored.
@@ -172,23 +173,25 @@ class ProbeExtractor implements MetadataExtractor {
     );
   }
 
-  /// The file's SHA-256 as lowercase hex, streamed by the native library —
-  /// the identity hash [sha256OfFile] computes in pure Dart, several times
+  /// The file's identity hash as lowercase hex, computed by the native
+  /// library — the same sampled sha256 [sampledSha256OfFile] computes in
+  /// pure Dart, over the first and last mebibyte and the length, only
   /// faster. The read runs on a fresh isolate so the event loop keeps
   /// serving while a movie goes by. Throws a [FileSystemException] when
   /// the file cannot be read, a [StateError] on any other native failure.
   ///
-  /// Shaped to stand in for [sha256OfFile] as the scanner's `hashFile`.
-  Future<String> sha256(String path) async {
+  /// Shaped to stand in for [sampledSha256OfFile] as the scanner's
+  /// `hashFile`.
+  Future<String> sampledSha256(String path) async {
     final nativePath = _nativePath(path);
     final libraryPath = _libraryPath;
     return Isolate.run(
-      () => _sha256Sync(libraryPath, nativePath),
+      () => _hashSync(libraryPath, nativePath),
       debugName: 'cadence-hash',
     );
   }
 
-  static String _sha256Sync(String libraryPath, String nativePath) {
+  static String _hashSync(String libraryPath, String nativePath) {
     final library = DynamicLibrary.open(libraryPath);
     final hashFile = library.lookupFunction<_HashFileC, _HashFileC>(
       'cadence_hash_file',
@@ -218,7 +221,7 @@ class ProbeExtractor implements MetadataExtractor {
       throw StateError('Native hash failed ($code): $message');
     }
     if (envelope['ok'] case {
-      'sha256': final String hex,
+      'sampledSha256': final String hex,
     } when hex.length == 64) {
       return hex;
     }

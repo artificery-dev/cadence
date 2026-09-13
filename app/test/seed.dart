@@ -33,7 +33,7 @@ Future<void> seedIfEmpty(MediaClient client) async {
           ),
           hashes: {
             // Honest-looking stand-ins until a scanner hashes real bytes.
-            HashKind.sha256: _slug('${album.title}/${track.title}'),
+            HashKind.sampledSha256: _slug('${album.title}/${track.title}'),
           },
           tags: [Tag.ofFormat(track.format)],
         ),
@@ -154,7 +154,7 @@ Future<int> _add(
   sizeBytes: sizeBytes,
   modifiedAt: DateTime.utc(year, 6, 1),
   metadata: metadata,
-  hashes: {HashKind.sha256: _slug('$dir/$name')},
+  hashes: {HashKind.sampledSha256: _slug('$dir/$name')},
   tags: [Tag.ofFormat(format)],
 );
 

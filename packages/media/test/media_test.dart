@@ -32,7 +32,7 @@ void registerTests() {
         duration: Duration(minutes: 4, seconds: 12),
         bitrateKbps: 320,
       ),
-      hashes: const {HashKind.sha256: 'deadbeef'},
+      hashes: const {HashKind.sampledSha256: 'deadbeef'},
       tags: [Tag.ofFormat('flac')],
     );
     return (libraryId, itemId);

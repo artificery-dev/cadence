@@ -188,7 +188,7 @@ Future<MediaEndpoint> _openHost(_Boot boot) async {
   final probe = ProbeExtractor.tryLoad(searchFirst: boot.probeSearch);
   MediaExtractor buildExtractor() =>
       MediaExtractor([...defaultMediaExtractor().tiers, ?probe]);
-  final hashFile = probe?.sha256 ?? sha256OfFile;
+  final hashFile = probe?.sampledSha256 ?? sampledSha256OfFile;
   const policy = ScanPolicy(artwork: ArtworkPolicy.deferred);
   if (!Platform.isLinux) {
     final database = MediaDatabase(NativeDatabase(File(boot.databasePath)));

@@ -5,43 +5,31 @@ import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 
 /// How much of a file rides in each read: 256KiB, large enough to keep the
-/// disk busy, small enough that a worker never holds a movie in memory.
+/// disk busy, small enough that a worker never holds much in memory.
 const int sha256ChunkSize = 256 * 1024;
 
-/// The file's sha256 as lowercase hex, streamed chunk by chunk — the whole
-/// file passes through, but never all at once. This is the identity hash:
-/// the same bytes anywhere on disk answer with the same string, which is
-/// how the scanner tells a move from a stranger.
-Future<String> sha256OfFile(
-  String path, {
-  FileSystem? fileSystem,
-  int chunkSize = sha256ChunkSize,
-}) async {
-  if (chunkSize < 1) throw ArgumentError.value(chunkSize, "chunkSize");
-  final file = await (fileSystem ?? mediaFileSystem).file(path).open();
-  try {
-    final holder = _DigestHolder();
-    final input = sha256.startChunkedConversion(holder);
-    while (true) {
-      final chunk = await file.read(chunkSize);
-      if (chunk.isEmpty) break;
-      input.add(chunk);
-    }
-    input.close();
-    return holder.digest.toString();
-  } finally {
-    await file.close();
-  }
-}
-
-/// Default bytes sampled from each end for a temporary work fingerprint.
+/// How far into each end of a file the identity hash reads: one mebibyte
+/// from the head, one from the tail. A file of twice this or less is read
+/// whole.
 const int sampledSpan = 1024 * 1024;
 
-/// Temporary fingerprint of head + tail + size (8-byte little-endian).
-/// Small files contribute all bytes once, then size. This is not a persistent
-/// identity: equal samples do not establish equal content. Never use it for
-/// move matching or deduplication. The scanner currently uses job/path identity
-/// for pending work and computes full SHA-256 before committing each file.
+/// The identity hash, as lowercase hex: sha256 over the file's first
+/// [span] bytes, its last [span] bytes, and its length as eight
+/// little-endian bytes. A file of `2 * span` or less contributes every
+/// byte once, then its length.
+///
+/// This is what names a file's bytes to the scanner: the same file
+/// anywhere on disk answers with the same string, which is how a move is
+/// told from a stranger. The read is a fixed two mebibytes however long
+/// the file, so identifying a library costs minutes rather than the hours
+/// a full read of every track would on a small player with a large card.
+/// The trade is that two files differing only between the spans are one
+/// file to the scanner - a deliberate near-duplicate can fool it; nothing
+/// a library does by accident will.
+///
+/// The native probe library computes the same hash (`cadence_hash_file`),
+/// and the two must agree byte for byte: a library hashed by one is
+/// rescanned by the other.
 Future<String> sampledSha256OfFile(
   String path, {
   FileSystem? fileSystem,
